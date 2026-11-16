@@ -30,6 +30,44 @@ BUILDERS_HUT = 1000015
 BOB_CONTROL = 1000065  # in the builder base: its builder (B.O.B) works in the home village too
 OTTO_OUTPOST = 1000078  # the builder base's second builder (O.T.T.O)
 
+# The export's lists whose items carry "timer" while upgrading (or researched).
+UPGRADING_LISTS = ("buildings", "traps", "units", "spells", "siege_machines", "heroes", "pets")
+# The builder base's lists, by who works on them: its builders (the Master Builder, O.T.T.O) or its Star Laboratory.
+BUILDER_BASE_LISTS = {"buildings2": "builders", "traps2": "builders", "heroes2": "builders", "units2": "lab"}
+# The helpers (the export's "helpers"): each speeds up the upgrade it's put on ("helper_recurrent"
+# on it: put back on it each time it's ready) for an hour, saving its level in hours, once every
+# HELPER_CYCLE (a cooldown they share). The Builder's Apprentice helps builders' upgrades, the
+# Lab Assistant research.
+BUILDERS_APPRENTICE = 93000000
+LAB_ASSISTANT = 93000001
+HELPED_BY = {"buildings": BUILDERS_APPRENTICE, "traps": BUILDERS_APPRENTICE, "heroes": BUILDERS_APPRENTICE,
+             "units": LAB_ASSISTANT, "spells": LAB_ASSISTANT, "siege_machines": LAB_ASSISTANT}
+HELPER_CYCLE = 23 * 3600  # s from one hour of help to the next
+HELPER_HOUR = 3600
+
+
+def helped_end(start: int, left: int, level: int, cooldown: int) -> float:
+    """When an upgrade with ``left`` seconds to go at ``start`` is done,
+    with a helper of ``level`` put on it each time it's ready (in
+    ``cooldown`` seconds): each hour of help does ``level`` + 1 hours of it."""
+    rate = level + 1
+    t, left_ = float(start), float(left)
+    # Its last hour of help began HELPER_CYCLE - cooldown before ``start``; ready (no cooldown): now.
+    begun = start - (HELPER_CYCLE - cooldown) if cooldown > 0 else start
+    for _ in range(400):  # (a year of help at most)
+        help_from, help_to = max(begun, t), begun + HELPER_HOUR
+        if help_to > t:  # an hour of help still to come, or under way
+            if t + left_ <= help_from:
+                return t + left_
+            left_ -= help_from - t
+            t = help_from
+            if left_ <= (help_to - t) * rate:
+                return t + left_ / rate
+            left_ -= (help_to - t) * rate
+            t = help_to
+        begun += HELPER_CYCLE
+    return t + left_
+
 # Town Hall levels that open a feature (only those that are certain: a
 # feature is left out only when it can't be there yet).
 DARK_ELIXIR_AT = 7
@@ -64,6 +102,23 @@ class Village:
     town_hall_until: int = 0  # when the Town Hall's upgrade under way ends (seconds since 1970; 0: none)
     builder_base: bool = False  # the builder base is in use (it has troops or a hero): the boat is repaired
     read_on: str = ""  # the day the bot read it (YYYY-MM-DD)
+    # What was being upgraded or researched when the export was made: the
+    # game's id -> when each one under way ends (seconds since 1970).
+    finishing: dict[int, tuple[int, ...]] = field(default_factory=dict)
+    # The same for the builder base, by who works on it ("builders", "lab"): when each one under way
+    # ends (a Clock Tower boost isn't counted: it ends sooner).
+    builder_finishing: dict[str, tuple[int, ...]] = field(default_factory=dict)
+    # The helpers unlocked: the game's id -> (level, seconds until it's ready again).
+    helpers: dict[int, tuple[int, int]] = field(default_factory=dict)
+    # What each helper is put on ("helper_recurrent": the game puts it back on that each time it's
+    # ready), while that's still under way: the helper's id -> the upgrade's id.
+    helping: dict[int, int] = field(default_factory=dict)
+    # How many there are of each building and trap (the game's id), upgrading or not.
+    counts: dict[int, int] = field(default_factory=dict)
+
+    @property
+    def upgrading(self) -> frozenset[int]:
+        return frozenset(self.finishing)
 
     def has(self, building: int) -> bool:
         return self.buildings.get(building, (0, 0))[1] > 0
@@ -98,13 +153,58 @@ def parse(text: str | None) -> Village | None:
              if isinstance(b, dict)]
     bob = BOB_CONTROL in base2
     huts = buildings.get(BUILDERS_HUT, (0, 0))[1]
+    finishing: dict[int, tuple[int, ...]] = {}
+    helping: dict[int, int] = {}
+    counts: dict[int, int] = {}
+    when = stamp if isinstance(stamp, int) else 0
+    helpers = {h["data"]: (int(h.get("lvl", 0) or 0), int(h.get("helper_cooldown", 0) or 0))
+               for h in (data.get("helpers") if isinstance(data.get("helpers"), list) else ())
+               if isinstance(h, dict) and isinstance(h.get("data"), int)}
+    for key in UPGRADING_LISTS:
+        for item in data.get(key) if isinstance(data.get(key), list) else ():
+            if not isinstance(item, dict) or not isinstance(item.get("data"), int):
+                continue
+            if key in ("buildings", "traps"):
+                counts[item["data"]] = counts.get(item["data"], 0) + int(item.get("cnt", 1) or 1)
+            if isinstance(item.get("timer"), int) and item["timer"] > 0:
+                end: float = when + item["timer"]
+                level, cooldown = helpers.get(HELPED_BY.get(key, 0), (0, 0))
+                if item.get("helper_recurrent") and level > 0:
+                    end = helped_end(when, item["timer"], level, cooldown)
+                    helping[HELPED_BY[key]] = item["data"]
+                finishing[item["data"]] = (*finishing.get(item["data"], ()), int(end))
+    builder_finishing: dict[str, tuple[int, ...]] = {}
+    for key, slot in BUILDER_BASE_LISTS.items():
+        for item in data.get(key) if isinstance(data.get(key), list) else ():
+            if isinstance(item, dict) and isinstance(item.get("timer"), int) and item["timer"] > 0:
+                builder_finishing[slot] = (*builder_finishing.get(slot, ()), when + item["timer"])
     return Village(hall, buildings, heroes=count("heroes"), pets=count("pets"),
+                   finishing={k: tuple(sorted(v)) for k, v in finishing.items()}, counts=counts,
+                   builder_finishing={k: tuple(sorted(v)) for k, v in builder_finishing.items()},
+                   helpers={k: v for k, v in helpers.items() if v[0] > 0}, helping=helping,
                    builder_heroes=count("heroes2") if isinstance(data.get("heroes2"), list) else -1,
                    builders=huts + bob if huts else 0,
                    builder_base_builders=(1 + (OTTO_OUTPOST in base2)) if base2 else 0,
                    timestamp=stamp if isinstance(stamp, int) else 0,
                    town_hall_until=stamp + left if isinstance(stamp, int) and left > 0 else 0,
                    builder_base=bool(count("units2") or count("heroes2")))
+
+
+def apprentice_job(village: Village | None, now: float, ids: set[int] | frozenset[int] = frozenset(),
+                   helper: int = BUILDERS_APPRENTICE) -> int | None:
+    """The upgrade under way to put an idle ``helper`` on (the game's id),
+    or None: not unlocked, already on one still under way, or none worth
+    it. The one with the most time left: it gets every hour of help to
+    come (an upgrade done within the hour would waste some). ``ids``: the
+    upgrades it may help (by default the apprentice's: buildings, traps,
+    heroes)."""
+    if village is None or village.helpers.get(helper, (0, 0))[0] <= 0 or helper in village.helping:
+        return None
+    from farmbot import gamedata
+
+    ids = ids or {*gamedata.BUILDINGS, *gamedata.TRAPS, *gamedata.HEROES}
+    worth = [(max(ends), i) for i, ends in village.finishing.items() if i in ids and max(ends) > now + HELPER_HOUR]
+    return max(worth)[1] if worth else None
 
 
 def _read_kept(path: str | Path | None) -> tuple[dict, Village] | None:

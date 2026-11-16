@@ -117,6 +117,13 @@ def make_zip(folder: Path, archive: Path) -> Path:
 
 
 def main() -> int:
+    # dist/COCFARM is a working COCFARM once run (the Start menu may point to
+    # it): its settings and accounts would go with it.
+    kept = [name for name in ("farmbot.toml", "profiles", "instances", "attacks.csv") if (APP / name).exists()]
+    if kept:
+        print(f"error: {APP} holds a COCFARM's own data ({', '.join(kept)}); "
+              "move them somewhere safe (or delete them) first", file=sys.stderr)
+        return 1
     shutil.rmtree(DIST, ignore_errors=True)
     shutil.rmtree(ROOT / "build", ignore_errors=True)
     subprocess.run([
@@ -142,7 +149,7 @@ def main() -> int:
     prune(APP / "_internal")
     # Pictures stay as plain files next to the exe so new ones can be added.
     # (Not the builder's own pictures, kept out of git too: their Clan Castle, their air troop cards.)
-    own = {ROOT / "templates": ["redact"], ROOT / "templates" / "cards": ["air"]}
+    own = {ROOT / "templates": ["redact"]}
     shutil.copytree(ROOT / "templates", APP / "templates", ignore=lambda folder, names: own.get(Path(folder), []))
     shutil.copy(ROOT / "farmbot.example.toml", APP / "farmbot.example.toml")
     add_licenses(APP)

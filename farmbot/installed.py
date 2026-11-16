@@ -173,6 +173,10 @@ def uninstall(exe: Path | None = None, launch: Callable[[list[str]], object] | N
         return 1
     exe = (exe or Path(sys.executable)).resolve()
     app = exe.parent
+    if launch is None:
+        from farmbot import wakeup
+
+        wakeup.cancel()  # (Close COCFARM between upgrades: Windows would open it again)
     if not safe_to_remove(app):
         print(f"error: {app} doesn't look like a COCFARM folder; delete it yourself", file=sys.stderr)
         return 1

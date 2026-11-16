@@ -22,7 +22,7 @@ to deploy, green = on the field, grey = dead.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Callable
 
 import cv2
@@ -89,18 +89,37 @@ def _find_scaled(game: Game, name: str, threshold: float = BOAT_THRESHOLD,
                  below: float = 0.0) -> tuple[int, int] | None:
     """Centre of ``name`` on screen at whatever size it shows, or ``None``.
     ``below``: the point this many of its heights under its centre instead."""
-    from farmbot.vision import best_scale, match_template, _resized
-
     game.refresh()
     match = game.find(name) if not below else None
     if match is not None:
         return match.x, match.y
-    for _, image in game.vision.library.get(name):
-        scale, score = best_scale(game.screen, image, list(BOAT_SIZES))
-        if score >= threshold:
-            found = match_template(game.screen, _resized(image, scale), threshold)
+    found = _sized_match(game, name, BOAT_SIZES, threshold)
+    return None if found is None else (found.x, found.y + round(below * found.h))
+
+
+def _sized_match(game: Game, name: str, sizes: tuple[float, ...], threshold: float):
+    """The best match of ``name`` on the current screenshot at whichever of
+    ``sizes`` it shows, or ``None``. Each picture is tried first at the
+    size it last matched at, alone (one look instead of one per size, and
+    no screen-wide scoring); at every size when it isn't found there."""
+    from farmbot.vision import match_template, _resized
+
+    known = memory(game).sizes
+    for tname, image in game.vision.library.get(name):
+        last = known.get(tname)
+        if last:
+            found = match_template(game.screen, _resized(image, last), threshold)
             if found:
-                return found[0].x, found[0].y + round(below * found[0].h)
+                return found[0]
+        # Every size, each looked at coarse to fine (a fraction of scoring the whole screen at each).
+        best = None
+        for scale in sizes:
+            found = match_template(game.screen, _resized(image, scale), threshold)
+            if found and (best is None or found[0].score > best[1].score):
+                best = scale, found[0]
+        if best is not None:
+            known[tname] = best[0]
+            return best[1]
     return None
 
 
@@ -324,10 +343,11 @@ def collect_resources(game: Game, tries: int = 4, second_base: bool = True,
     which (with ``restore``) the view is put back. Returns what was collected."""
     game.zoom_out()
     view = game.refresh().copy()
-    collected = _collect_in_view(game, tries, kinds)
+    collected = _collect_in_view(game, tries, kinds, view)
     if second_base and {"gold", "elixir"} & set(kinds):  # the gem mine is on the first base
-        _to_second_base(game)
-        collected += [k for k in _collect_in_view(game, tries, kinds) if k not in collected]
+        screen = _to_second_base(game)
+        on_second = tuple(k for k in kinds if k != "gems")
+        collected += [k for k in _collect_in_view(game, tries, on_second, screen) if k not in collected]
         if restore:
             restore_view(game, view)
     if collected:
@@ -335,52 +355,192 @@ def collect_resources(game: Game, tries: int = 4, second_base: bool = True,
     return collected
 
 
-def _to_second_base(game: Game) -> None:
-    """Drag the view up and left until it stops: the second base."""
+@dataclass
+class Memory:
+    """What the builder base looked like last time, kept on the game for
+    the session: the layout rarely changes, so it saves looking and
+    dragging. Everything here is checked against what's on screen before
+    it's used, and forgotten (looked for afresh) when it doesn't fit."""
+    second_drags: int = 0  # drags from the first base to the second's edge (0: not known)
+    second_view: np.ndarray | None = None  # the screen at the second base's edge
+    # The elixir cart's tag: where it was on the screen kept with it (its
+    # tag looks like an elixir bubble, and out of its usual spot it's
+    # told apart only by tapping it, which opens its window).
+    cart_view: np.ndarray | None = None
+    cart: tuple[int, int] | None = None
+    sizes: dict[str, float] = field(default_factory=dict)  # picture -> the size it last matched at (boat, clock)
+
+    def remember_cart(self, screen: np.ndarray, point: tuple[int, int]) -> None:
+        self.cart_view, self.cart = screen.copy(), point
+
+    def cart_on(self, screen: np.ndarray) -> tuple[int, int] | None:
+        """Where the cart's tag is on ``screen``, as remembered, or ``None``
+        (not known, or the two views don't overlap)."""
+        if self.cart is None or self.cart_view is None:
+            return None
+        shift = view_shift(self.cart_view, screen)
+        return None if shift is None else (self.cart[0] + shift[0], self.cart[1] + shift[1])
+
+
+def memory(game: Game) -> Memory:
+    return game.__dict__.setdefault("_bb_memory", Memory())
+
+
+def _to_second_base(game: Game) -> np.ndarray:
+    """Drag the view up and left until it stops: the second base. Returns
+    the screenshot it ended on. The drags it took last time are made in a
+    row, then the view checked against the one they reached then (the
+    camera stops at the map's edge, so it's the same view); without that,
+    or if it isn't, it drags on until a drag doesn't move it."""
     x1, y1, x2, y2, ms = FIRST_BASE_DRAG
-    before = game.refresh().copy()
+    mem = memory(game)
+    drags = 0
+    if mem.second_drags and mem.second_view is not None:
+        for _ in range(mem.second_drags):
+            game.swipe(x2, y2, x1, y1, ms)
+            game.wait(1)
+        drags = mem.second_drags
+        shift = view_shift(mem.second_view, game.refresh())
+        if shift is not None and max(map(abs, shift)) <= VIEW_NEAR:
+            return game.screen
+        log.info("Builder base: the second base isn't where it was (%s off); dragging on", shift)
+        mem.second_drags, mem.second_view = 0, None
+    before = game.screen if game.screen is not None else game.refresh()
+    before = before.copy()
     for _ in range(FIRST_BASE_DRAGS):
         game.swipe(x2, y2, x1, y1, ms)
         game.wait(1)
         if view_change(before, game.refresh()) < VIEW_STILL:
+            mem.second_drags, mem.second_view = max(drags, 1), game.screen.copy()
             break
+        drags += 1
         before = game.screen.copy()
+    return game.screen
 
 
-def _collect_in_view(game: Game, tries: int, kinds: tuple[str, ...] = ("gold", "elixir", "gems")) -> list[str]:
-    collected = []
-    for kind, name in (("gold", T.BB_COLLECT_GOLD), ("elixir", T.BB_COLLECT_ELIXIR), ("gems", T.BB_COLLECT_GEMS)):
-        if kind not in kinds or not game.has(name):
+BUBBLE_NAMES = (("gold", T.BB_COLLECT_GOLD), ("elixir", T.BB_COLLECT_ELIXIR), ("gems", T.BB_COLLECT_GEMS))
+# The elixir cart's tag can show outside CART_AREA (the view isn't always
+# where the boat left it): an elixir bubble up here, by the dock, may be the
+# cart, so it's tapped last, on its own (its window would catch other taps).
+DOCK_AREA = (600, 0, 1060, 420)  # x0, y0, x1, y1
+SAME_SPOT = 20  # px: two finds this close are one bubble (seen by two of its pictures)
+
+
+def bubbles(game: Game, kinds: tuple[str, ...], screen: np.ndarray | None = None) -> list[tuple[str, int, int]]:
+    """``(kind, x, y)`` of every bubble or red "full" tag of ``kinds`` on
+    one screenshot (the current one, or a fresh one if there's none), one
+    per collector, clear of the elixir cart's usual spot."""
+    if screen is None:
+        screen = game.screen if game.screen is not None else game.refresh()
+    from farmbot.game import find_pool
+
+    # Each picture on its own thread (OpenCV lets go of Python's lock while
+    # matching), the red tags meanwhile.
+    pool = find_pool()
+    looks = [(kind, [pool.submit(game.vision.find_all, screen, tname, BUBBLE_THRESHOLD)
+                     for tname, _ in game.vision.library.get(name)])
+             for kind, name in BUBBLE_NAMES if kind in kinds and game.has(name)]
+    found: list[tuple[str, int, int]] = []
+    tags = full_tags(screen) if {"gold", "elixir"} & set(kinds) else []
+    for kind, futures in looks:
+        matches = sorted((m for f in futures for m in f.result()), key=lambda m: -m.score)
+        spots = [m.point for m in matches]
+        spots += [(x, y) for tag, x, y in tags if tag == kind]  # full: a red tag
+        for x, y in spots:
+            if _in_cart_area(x, y) or any(np.hypot(x - fx, y - fy) <= SAME_SPOT for _, fx, fy in found):
+                continue
+            found.append((kind, x, y))
+    return found
+
+
+def _by_the_dock(kind: str, x: int, y: int) -> bool:
+    x0, y0, x1, y1 = DOCK_AREA
+    return kind == "elixir" and x0 <= x <= x1 and y0 <= y <= y1
+
+
+def _near(point: tuple[int, int], points: list[tuple[int, int]], distance: float) -> bool:
+    return any(np.hypot(point[0] - x, point[1] - y) <= distance for x, y in points)
+
+
+def _tap_order(spots: list[tuple[str, int, int]]) -> list[tuple[str, int, int]]:
+    """The bubbles in an order that keeps the finger's path short (nearest
+    next, from the left), one that may be the elixir cart last, alone."""
+    plain = [s for s in spots if not _by_the_dock(*s)]
+    order: list[tuple[str, int, int]] = []
+    while plain:
+        last = order[-1][1:] if order else (0, 0)
+        nxt = min(plain, key=lambda s: np.hypot(s[1] - last[0], s[2] - last[1]))
+        plain.remove(nxt)
+        order.append(nxt)
+    return order or [s for s in spots if _by_the_dock(*s)][:1]
+
+
+def _collect_in_view(game: Game, tries: int, kinds: tuple[str, ...] = ("gold", "elixir", "gems"),
+                     screen: np.ndarray | None = None) -> list[str]:
+    """Tap every bubble in view, all kinds from one look, then look again:
+    a bubble still there after its tap means its storage is full (or it
+    isn't a bubble), and it isn't tapped again (that only selects the
+    building, and a drag starting on it would move it). ``screen``: a
+    screenshot of the view just taken (else one is)."""
+    collected: list[str] = []
+    tapped: list[tuple[int, int]] = []
+    cart: list[tuple[int, int]] = []  # bubbles that turned out to be the elixir cart's
+    said: set[str] = set()
+    dock = False  # the last tap was on a bubble by the dock (perhaps the cart's)
+    looked: np.ndarray | None = None  # the screen the last taps were aimed on
+    for _ in range(tries):
+        if screen is None:
+            screen = game.refresh()
+        if dock and _cart_open(game):
+            # The last tap was the cart's tag: keep clear of it from now on.
+            cart.append(tapped[-1])
+            if looked is not None:
+                memory(game).remember_cart(looked, tapped[-1])
+            _close_window(game, look=False)
+            screen = None
             continue
-        tapped: tuple[int, int] | None = None
-        for _ in range(tries):
-            game.refresh()
-            spots = [m.point for m in game.find_all(name, threshold=BUBBLE_THRESHOLD)]
-            spots += [(x, y) for tag, x, y in full_tags(game.screen) if tag == kind]  # full: a red tag
-            spots = [p for p in spots if not _in_cart_area(*p)]
-            if not spots:
-                break
-            if tapped and min(np.hypot(x - tapped[0], y - tapped[1]) for x, y in spots) <= BUBBLE_STAYED:
-                # Still there after a tap: its storage is full (or it isn't a bubble). Tapping
-                # again only selects the building, and a drag starting on it would move it.
+        if _close_window(game, look=False):
+            screen = None
+            continue  # it hid the map
+        spots = bubbles(game, kinds, screen)
+        if not cart and any(_by_the_dock(*s) for s in spots):
+            known = memory(game).cart_on(screen)
+            if known is not None:
+                cart.append(known)
+        spots = [s for s in spots if not _near(s[1:], cart, BUBBLE_STAYED)]
+        for kind, x, y in spots:
+            if _near((x, y), tapped, BUBBLE_STAYED) and kind not in said:
+                said.add(kind)
                 log.info("Builder base %s: the bubble stayed (storage full?)", kind)
-                break
-            tapped = spots[0]
-            game.tap(*tapped, jitter=3)
+        fresh = _tap_order([s for s in spots if not _near(s[1:], tapped, BUBBLE_STAYED)])
+        if not fresh:
+            break
+        looked = screen
+        for kind, x, y in fresh:
+            game.tap(x, y, jitter=3)
             game.wait(1.0)
+            tapped.append((x, y))
+            dock = _by_the_dock(kind, x, y)
             if kind not in collected:
                 collected.append(kind)
-            _close_window(game)
+        screen = None
     return collected
 
 
-def _close_window(game: Game) -> bool:
+def _cart_open(game: Game) -> bool:
+    """The elixir cart's window is open (its Collect button shows)."""
+    return game.has(T.BB_CART_COLLECT) and game.find(T.BB_CART_COLLECT, threshold=0.8) is not None
+
+
+def _close_window(game: Game, look: bool = True) -> bool:
     """Close a window a tap opened over the map (the elixir cart's, when
     the second base's view brings it out of its usual place): drags under
-    it would only scroll it. True if one was."""
+    it would only scroll it. True if one was. ``look``: on a fresh
+    screenshot (else the one just taken)."""
     if not game.has(T.CLOSE):
         return False
-    game.refresh()
+    if look or game.screen is None:
+        game.refresh()
     if not game.click(T.CLOSE):
         return False
     log.info("Closed a window over the builder base")
@@ -394,15 +554,20 @@ def collect_elixir_cart(game: Game) -> bool:
     if not (game.has(T.BB_COLLECT_ELIXIR) and game.has(T.BB_CART_COLLECT)):
         return False
     game.zoom_out()
-    game.refresh()
+    screen = game.screen if game.screen is not None else game.refresh()
     # Its tag: an elixir drop (as on a collector's bubble), or, once it's full, the drop on red.
-    tags = [m.point for m in game.find_all(T.BB_COLLECT_ELIXIR, threshold=0.75) if _in_cart_area(m.x, m.y)]
-    tags += [(x, y) for kind, x, y in full_tags(game.screen) if kind == "elixir" and _in_cart_area(x, y)]
+    # Looked for around its usual spot only, and where it was last seen, if the view moved.
+    tags = _cart_tags(game, screen, CART_AREA)
+    known = memory(game).cart_on(screen) if not tags else None
+    if known is not None:
+        tags = [p for p in _cart_tags(game, screen, _around(known, CART_NEAR)) if _near(p, [known], BUBBLE_STAYED)]
     if not tags:
         log.info("Elixir cart: nothing to collect")
         return False
     game.tap(*tags[0], jitter=3)
     button = game.wait_for(T.BB_CART_COLLECT, timeout=4)
+    if button is not None:
+        memory(game).remember_cart(screen, tags[0])
     collected = False
     if button is not None and _is_green(game.screen, button):
         game.tap_match(button)
@@ -418,8 +583,41 @@ def collect_elixir_cart(game: Game) -> bool:
     return collected
 
 
+CART_NEAR = 40  # px around where the cart's tag was last seen, looked at when the view has moved
+
+
+def _around(point: tuple[int, int], margin: int) -> tuple[int, int, int, int]:
+    return point[0] - margin, point[1] - margin, point[0] + margin, point[1] + margin
+
+
+def _cart_tags(game: Game, screen: np.ndarray, area: tuple[int, int, int, int]) -> list[tuple[int, int]]:
+    """The cart's tag in ``area`` (x0, y0, x1, y1): an elixir drop, or the
+    drop on red once it's full. Only that area (and a margin for the
+    pictures' size) is looked at."""
+    from farmbot.geometry import Rect
+
+    x0, y0, x1, y1 = area
+    pad = 40
+    region = Rect(x0 - pad, y0 - pad, x1 - x0 + 2 * pad, y1 - y0 + 2 * pad)
+    inside = (lambda x, y: x0 <= x <= x1 and y0 <= y <= y1)
+    tags = [m.point for m in game.find_all(T.BB_COLLECT_ELIXIR, threshold=0.75, region=region) if inside(m.x, m.y)]
+    rx, ry = max(region.x, 0), max(region.y, 0)
+    part = screen[ry:region.y + region.h, rx:region.x + region.w]
+    tags += [(x + rx, y + ry) for kind, x, y in full_tags(part) if kind == "elixir" and inside(x + rx, y + ry)]
+    return tags
+
+
 CLOCK_SIZES = (0.9, 1.0, 1.1)
 CLOCK_THRESHOLD = 0.8
+
+
+def clock_ready(game: Game) -> bool:
+    """The Clock Tower's free boost is ready: its clock bubble shows (on a
+    fresh screenshot). A quick look (the bubble's size is remembered)."""
+    if not (game.has(T.BB_CLOCK_READY) and game.has(T.BB_CLOCK_FREE_BOOST) and game.has(T.BB_FREE_BOOST_WINDOW)):
+        return False
+    game.refresh()
+    return _sized_match(game, T.BB_CLOCK_READY, CLOCK_SIZES, CLOCK_THRESHOLD) is not None
 
 
 def boost_clock_tower(game: Game) -> bool:
@@ -427,19 +625,10 @@ def boost_clock_tower(game: Game) -> bool:
     bubble (selects the tower), its "Free Boost!" button, then Boost in the
     "Free Boost!" window, which only ever opens for the free one. The blue
     Boost beside it (a magic item) is never touched. True if boosted."""
-    from farmbot.vision import best_scale, match_template, _resized
-
     if not (game.has(T.BB_CLOCK_READY) and game.has(T.BB_CLOCK_FREE_BOOST) and game.has(T.BB_FREE_BOOST_WINDOW)):
         return False
     game.refresh()
-    bubble = None
-    for _, image in game.vision.library.get(T.BB_CLOCK_READY):
-        scale, score = best_scale(game.screen, image, list(CLOCK_SIZES))
-        if score >= CLOCK_THRESHOLD:
-            found = match_template(game.screen, _resized(image, scale), CLOCK_THRESHOLD)
-            if found:
-                bubble = found[0]
-                break
+    bubble = _sized_match(game, T.BB_CLOCK_READY, CLOCK_SIZES, CLOCK_THRESHOLD)
     if bubble is None:
         return False
     game.tap(bubble.x, bubble.y, jitter=2)

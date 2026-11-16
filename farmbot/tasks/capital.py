@@ -48,6 +48,8 @@ log = logging.getLogger(__name__)
 WEEKEND_START = (4, 7)  # weekday (Monday 0), hour
 WEEKEND_HOURS = 72
 MAX_RAIDS = 6  # raid attacks a weekend (5, and a bonus one)
+# The last raid_capital's raids: (district, % before, % after), None where unread.
+results: list[tuple[str, int | None, int | None]] = []
 
 # The raid map is drawn the same for every clan: each district's stars (the
 # middle one) and the district's building, which is tapped to pick it.
@@ -64,6 +66,12 @@ DISTRICTS = {
 }
 STAR_GAP = 33  # px between a district's stars
 STAR_HALF = 11  # px: half the box looked at for each star
+# Left of a district's stars, its destruction so far ("88%"): white digits,
+# right-aligned against the stars, read with the font in ``PERCENT_FONT``.
+PERCENT_FONT = "fonts/capital"
+PERCENT_BOX = (-125, -14, 77, 28)  # x, y off the middle star, width, height
+PERCENT_SURE = 0.75  # each digit's least match (true ones read 0.8+; a 6 before it was learnt read 0 at 0.65)
+PERCENT_PAIR = 1.2  # a piece this many times wider than high is two touching digits (one is ~0.9)
 
 AIRSHIP_LIKENESS = 0.8  # the village's zoom varies a little: ~0.93 seen, other places under 0.7
 
@@ -123,11 +131,27 @@ BATTLE_LENGTH = 200.0  # s: a raid battle is 3 minutes
 DROP_MARGINS = (31, 15)  # px across kept off the deploy ground's edge (the second for a narrow strip)
 DROP_TRIES = 4  # spots tried before giving up on dropping a card
 DROP_APART = 80  # px between two spots tried
+HEAL_TRIES = 3  # miners' heal drops that land nothing before the card is given up
 # Somewhere on the usual raid map when no deploy ground is seen: under,
 # left and right of the base (a tap that drops nothing costs only a look).
 GUESSES = ((590, 660), (230, 520), (950, 520))
 DEPLOYED = 4.0  # mean change of the card's count corner when a unit left it (the same card ~1)
 LIGHTNING_REACH = 45  # px: the splash's radius at the raid's zoom
+# The skeleton spell goes on buildings this near the drop: the first the troops
+# fight (live 2026-11-14, a fresh district: picked over the whole screen, it
+# went on the base's core 430 px away, where the troops never got).
+SKELETON_NEAR = 200  # px
+# Where the troops go down: the deploy ground with the most of the base still
+# standing within this reach (recordings of 2026-11-07/08: the ground nearest
+# the base's middle was, in later raids, next to rubble or bare grass, the
+# troops walking a while before they hit anything).
+DROP_REACH = 150  # px
+DROP_MIDDLE = 0.5  # how much nearer the middle counts: buildings' share (0-1) per screen-width nearer
+# Fortresses: a heal not cast yet by then goes on the first reading under
+# LATE_HEAL_AT (raids of 2026-11-07: three times in four the heal was never
+# cast, the fortresses never read under 0.5).
+LATE_HEAL_AFTER = 45.0  # s after the drop (60 s left the one extra heal of the recordings to 101 s; 45 s puts it at 52 s)
+LATE_HEAL_AT = 0.85
 MAX_STRIKES = 6  # of one spell card: more than an army holds
 
 
@@ -188,6 +212,7 @@ def raid_capital(game: Game, cfg) -> int:
     """Raid with every raid attack left (the home village showing).
     Returns how many raids were made; raises NotAllowed when the game
     refuses them for this weekend."""
+    results.clear()
     if not ready(game):
         return 0
     badge = _find_badge(game)
@@ -237,7 +262,11 @@ def _start_raid(game: Game) -> bool:
         return False
     game.refresh()
     ship = game.find(T.CAPITAL_AIRSHIP, threshold=AIRSHIP_LIKENESS)
-    if ship is None or ship.y > 800:
+    if ship is None:
+        log.info("Clan Capital: no raid badge, and no picture of the airship matches it (its look changes): "
+                 "add one in Pictures, Capital airship")
+        return False
+    if ship.y > 800:
         return False
     game.tap_match(ship)
     deadline = game.clock() + 10
@@ -308,26 +337,88 @@ def stars(screen: np.ndarray, middle: tuple[int, int]) -> int | None:
     return won
 
 
-def pick_district(screen: np.ndarray) -> tuple[str, tuple[int, int]] | None:
-    """The open district furthest along (most stars, under three)."""
-    best = None
+def percent(screen: np.ndarray, middle: tuple[int, int], font) -> int | None:
+    """A district's destruction so far (0-100), or None if it can't be read."""
+    from farmbot import text
+    from farmbot.geometry import Rect
+
+    dx, dy, w, h = PERCENT_BOX
+    masks = [m for m in text.segment(screen, Rect(middle[0] + dx, middle[1] + dy, w, h))
+             if m.shape[1] >= 3 and 9 <= m.shape[0] <= 18]  # (no thin lines or background behind)
+    if len(masks) < 2:
+        return None
+    digits = ""
+    for mask in [part for m in masks[:-1] for part in _split_touching(m)]:  # the last is the % sign
+        char, score = font.classify(mask)
+        if not char.isdigit() or score < PERCENT_SURE:
+            return None
+        digits += char
+    value = int(digits)
+    return value if value <= 100 else None
+
+
+def _split_touching(mask: np.ndarray) -> list[np.ndarray]:
+    """Two digits that touch ("77" on the map, live 2026-11-14) come as one
+    piece about twice a digit's width: cut at its thinnest column."""
+    height, width = mask.shape
+    if width < PERCENT_PAIR * height:
+        return [mask]
+    ink = (mask > 0).sum(axis=0)
+    cut = width // 4 + int(np.argmin(ink[width // 4: width - width // 4]))
+    parts = []
+    for part in (mask[:, :cut], mask[:, cut + 1:]):
+        cols = np.nonzero((part > 0).any(axis=0))[0]
+        if len(cols):
+            parts.append(part[:, cols[0]:cols[-1] + 1])
+    return parts
+
+
+def pick_district(screen: np.ndarray, font=None) -> tuple[str, tuple[int, int]] | None:
+    """The open district nearest to falling: the most destroyed (under
+    three stars). Finishing one earns a bonus attack, so a half-destroyed
+    district goes first. If any open district's % can't be read (or
+    disagrees with its stars), all are judged by stars alone."""
+    open_ = []
     for name, (middle, building) in DISTRICTS.items():
         won = stars(screen, middle)
         if won is None or won >= 3:
             continue
-        if best is None or won > best[0]:
-            best = (won, name, building)
-    return (best[1], best[2]) if best else None
+        done = percent(screen, middle, font) if font is not None else None
+        open_.append((won, done if _agrees(done, won) else None, name, building))
+    if not open_:
+        return None
+    read = all(done is not None for _, done, _, _ in open_)
+    won, done, name, building = max(open_, key=lambda d: (d[1], d[0]) if read else d[0])
+    return name, building
+
+
+def _agrees(done: int | None, won: int) -> bool:
+    """A reading the stars allow: under 50% for none, 50% or more for two
+    (the district hall gives one star at any %), under 100% while open."""
+    if done is None or done >= 100:
+        return False
+    return not (won == 0 and done >= 50) and not (won == 2 and done < 50)
+
+
+def _font(game: Game):
+    try:
+        return game.vision.font(PERCENT_FONT)
+    except (FileNotFoundError, ValueError, AttributeError):
+        return None
 
 
 def _raid_once(game: Game, cfg) -> bool:
     game.refresh()
-    picked = pick_district(game.screen)
+    font = _font(game)
+    # "stars": the rule before 2026-11-14, by stars alone (map order breaks ties).
+    picked = pick_district(game.screen, font if getattr(cfg, "district_order", "destroyed") == "destroyed" else None)
     if picked is None:
         log.info("Clan Capital: no district to attack")
         return False
     name, building = picked
-    log.info("Clan Capital: attacking %s", name)
+    middle = DISTRICTS[name][0]
+    before = percent(game.screen, middle, font) if font is not None else None
+    log.info("Clan Capital: attacking %s (%s destroyed)", name, "?" if before is None else f"{before}%")
     game.tap(*building)
     if not game.click_when_visible(T.CAPITAL_DISTRICT_ATTACK, timeout=4):
         log.info("Clan Capital: %s has no Attack button", name)
@@ -355,10 +446,28 @@ def _raid_once(game: Game, cfg) -> bool:
         if game.has(T.SURRENDER_OK):
             game.click_when_visible(T.SURRENDER_OK, timeout=4)
         if not game.wait_for(T.CAPITAL_RESULT_MAP, timeout=15, interval=1):
+            log.warning("Clan Capital: %s: no result screen even after ending the raid; its gain is unknown", name)
+            results.append((name, before, None))
             return False
     game.click(T.CAPITAL_RESULT_MAP)
-    game.wait_for(T.CAPITAL_LEAVE_RAID, timeout=10)
+    results.append((name, before, _log_result(game, name, middle, font, before)))
     return True
+
+
+def _log_result(game: Game, name: str, middle: tuple[int, int], font, before: int | None) -> int | None:
+    """Logs the district's % after a raid, back on the raid map (or why it
+    can't), so every raid leaves a result line. Returns the % read."""
+    if game.wait_for(T.CAPITAL_LEAVE_RAID, timeout=10) is None:
+        log.warning("Clan Capital: %s: the raid map didn't come back after the raid; its gain is unknown", name)
+        return None
+    if font is None:
+        log.info("Clan Capital: %s raided (no %% font to read its gain)", name)
+        return None
+    game.wait(1)  # (the map's numbers settle)
+    after = percent(game.refresh(), middle, font)
+    gained = "" if before is None or after is None else f" (+{after - before})"
+    log.info("Clan Capital: %s now %s destroyed%s", name, "?" if after is None else f"{after}%", gained)
+    return after
 
 
 def _battle_starts(game: Game) -> bool:
@@ -548,17 +657,23 @@ def _distance(shape, point: tuple[float, float]) -> np.ndarray:
     return np.hypot(xs - point[0], ys - point[1])
 
 
-def lightning_spots(screen: np.ndarray, n: int, by: tuple[float, float] | None = None) -> list[tuple[int, int]]:
+def lightning_spots(screen: np.ndarray, n: int, by: tuple[float, float] | None = None,
+                    within: float | None = None) -> list[tuple[int, int]]:
     """Where n lightning spells hit the most buildings, counted within the
     splash's reach; each next spot away from the ones before. With ``by``
     (where the troops are), a spot nearer it counts a little more: of two
-    packed places, the one they get to."""
+    packed places, the one they get to; with ``within`` too, only spots
+    that near it."""
     disk = _disk(LIGHTNING_REACH)
     hit = cv2.filter2D(buildings(screen), -1, disk)
     reach_sum = disk.sum()
     worth = hit
     if by is not None:
-        worth = hit * (1 - LIGHTNING_FAR * _distance(hit.shape, by) / float(np.hypot(*hit.shape)))
+        far = _distance(hit.shape, by)
+        worth = hit * (1 - LIGHTNING_FAR * far / float(np.hypot(*hit.shape)))
+        if within is not None:
+            worth = np.where(far <= within, worth, 0).astype(worth.dtype)
+            hit = np.where(far <= within, hit, 0).astype(hit.dtype)
     r = LIGHTNING_REACH
     spots = []
     for _ in range(n):
@@ -573,10 +688,11 @@ def lightning_spots(screen: np.ndarray, n: int, by: tuple[float, float] | None =
 
 
 def drop_points(screen: np.ndarray, n: int = DROP_TRIES) -> list[tuple[int, int]]:
-    """Where to drop the troops in one clump, best first: the light green
-    ground nearest the middle of the base, a little way in from its edge;
-    then other spots on it, each away from those before (in case a tap
-    there drops nothing)."""
+    """Where to drop the troops in one clump, best first: on the light
+    green ground a little way in from its edge, where the most of the base
+    still stands within DROP_REACH (so they're at work at once), nearer its
+    middle breaking near-ties; then other spots on it, each away from those
+    before (in case a tap there drops nothing)."""
     zone, middle = deploy_area(screen)
     for margin in DROP_MARGINS:  # off the edge, so taps land inside: wide where the ground allows
         ys, xs = np.nonzero(cv2.erode(zone, np.ones((margin, margin), np.uint8)))
@@ -584,9 +700,15 @@ def drop_points(screen: np.ndarray, n: int = DROP_TRIES) -> list[tuple[int, int]
             break
     if middle is None:
         middle = (screen.shape[1] // 2, screen.shape[0] // 2)
-    far = (xs - middle[0]) ** 2 + (ys - middle[1]) ** 2
+    near = np.hypot(xs - middle[0], ys - middle[1]) / screen.shape[1]
+    score = -near
+    if len(xs):
+        disk = _disk(DROP_REACH)
+        standing = cv2.filter2D(buildings(screen), -1, disk / disk.sum())[ys, xs]
+        if standing.max() > 0:
+            score = standing / standing.max() - DROP_MIDDLE * near
     points: list[tuple[int, int]] = []
-    for i in np.argsort(far, kind="stable"):
+    for i in np.argsort(-score, kind="stable"):
         x, y = int(xs[i]), int(ys[i])
         if all(abs(x - px) + abs(y - py) >= DROP_APART for px, py in points):
             points.append((x, y))
@@ -664,17 +786,27 @@ def battle(game: Game, cfg) -> float:
         if name == "heal" or (name == "skeleton" and middle is None):
             continue
         if name == "skeleton":
-            spots = [(middle[0] + random.randint(-40, 40), middle[1] + random.randint(-40, 40))
-                     for _ in range(MAX_STRIKES)]
+            # On the packed buildings still standing nearest the troops (in later raids the middle is
+            # often rubble), so the skeletons hit them as the troops arrive.
+            screen = game.refresh()
+            near = getattr(cfg, "spells_near_drop", True)
+            spots = ((near and lightning_spots(screen, MAX_STRIKES, by=points[0], within=SKELETON_NEAR))
+                     or lightning_spots(screen, MAX_STRIKES, by=points[0])) or [
+                (middle[0] + random.randint(-40, 40), middle[1] + random.randint(-40, 40))
+                for _ in range(MAX_STRIKES)]
         else:  # lightning, and spells it has no picture of: each next on the next most packed buildings
-            spots = lightning_spots(game.refresh(), MAX_STRIKES, by=points[0])  # as the view is now
+            screen = game.refresh()  # as the view is now
+            near = getattr(cfg, "lightning_near_drop", False)
+            spots = ((near and lightning_spots(screen, MAX_STRIKES, by=points[0], within=SKELETON_NEAR))
+                     or lightning_spots(screen, MAX_STRIKES, by=points[0]))
         for spot in spots:  # one at a time while the card lasts
             if not slot_ready(game.refresh(), army.x(name)):
                 break
             log.info("Clan Capital: %s at %s", name.replace("_", " "), spot)
             _drop(game, army.x(name), spot, 1)
     heal_at = cfg.miner_heal_at if army.main == "super_miner" else cfg.fortress_heal_at
-    _heal(game, army, heal_at, dropped)
+    _heal(game, army, heal_at, dropped, late=getattr(cfg, "late_heal", True),
+          lead=getattr(cfg, "heal_lead", HEAL_LEAD))
     return dropped
 
 
@@ -795,7 +927,8 @@ def heal_spot(bars: list[tuple[int, int, float]], heal_at: float, groups: int = 
     return (int(np.mean([b[0] for b in hurt])), int(np.mean([b[1] for b in hurt])) + 20)  # the unit is under its bar
 
 
-def _heal(game: Game, army: Army, heal_at: float, dropped: float) -> None:
+def _heal(game: Game, army: Army, heal_at: float, dropped: float, late: bool = True,
+          lead: float = HEAL_LEAD) -> None:
     left = MAX_STRIKES if army.count("heal") else 0  # the card greys out sooner
     card = army.x("heal")
     seen = game.find(T.CAPITAL_BATTLE_HEAL) if game.has(T.CAPITAL_BATTLE_HEAL) else None
@@ -819,11 +952,13 @@ def _heal(game: Game, army: Army, heal_at: float, dropped: float) -> None:
         if bars:
             where = (float(np.mean([b[0] for b in bars])), float(np.mean([b[1] for b in bars])), now)
             spot = heal_spot(bars, heal_at, groups)
+            if spot is None and late and left == MAX_STRIKES and now - dropped >= LATE_HEAL_AFTER:
+                spot = heal_spot(bars, LATE_HEAL_AT, groups)  # not used yet: better on a scratched one than never
             if spot is not None and last_seen is not None and now - last_seen[2] < 3:
                 # Heading on: lead the heal by how far they moved lately.
                 dt = max(now - last_seen[2], 0.2)
-                spot = (int(spot[0] + (where[0] - last_seen[0]) / dt * HEAL_LEAD),
-                        int(spot[1] + (where[1] - last_seen[1]) / dt * HEAL_LEAD))
+                spot = (int(spot[0] + (where[0] - last_seen[0]) / dt * lead),
+                        int(spot[1] + (where[1] - last_seen[1]) / dt * lead))
             last_seen = where
         if spot is not None and now - last_heal >= HEAL_GAP:
             if not slot_ready(screen, card):
@@ -908,7 +1043,7 @@ def _heal_miners(game: Game, card: int | None, heal_at: float, dropped: float) -
     track: list[tuple[float, float, float]] = []
     readings: list[tuple[float, float]] = []  # (t, the lowest health read)
     last_heal: float | None = None
-    used, pans, last_pan = 0, 0, -PAN_GAP
+    used, failed, pans, last_pan = 0, 0, 0, -PAN_GAP
     while game.clock() - dropped < BATTLE_LENGTH:
         screen = game.refresh()
         if game.find(T.CAPITAL_RESULT_MAP) is not None:
@@ -947,7 +1082,13 @@ def _heal_miners(game: Game, card: int | None, heal_at: float, dropped: float) -
                     used += 1
                     last_heal = game.clock()
                 else:
-                    card = None  # none left after all
+                    # Not given up: live 2026-11-14 one tap that dropped nothing left both heals unused for
+                    # the last 2m50s while the miners died (a card that's used up stops the loop above).
+                    failed += 1
+                    if failed >= HEAL_TRIES:
+                        card = None
+                    else:
+                        game.wait(1)
                 continue
 
         if track and pans < MAX_PANS and now - last_pan >= PAN_GAP:

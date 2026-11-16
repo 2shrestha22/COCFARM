@@ -114,6 +114,10 @@ class T:
     SPEED = "buttons/speed_1x"  # "1x" in the last minute of a home battle: tap for 4x
     RETURN_HOME = "buttons/return_home"  # directory: "Return Home", or "Claim Reward" after a star bonus
     EVENT_CHEST = "buttons/event_chest"  # chest room shown after some battles during events
+    # "Skip", bottom right of every chest room: the room's scenery changes with
+    # the events (a hall with an arched window, a kitchen, ...), its Skip doesn't.
+    CHEST_SKIP = "buttons/chest_skip"
+    CHEST_TAP = "buttons/chest_tap"  # "Tap!" over a chest in a room without Skip (the Star Bonus chest, Nov 2026)
     CONTINUE = "buttons/continue"  # under the chest's reward
     PICK_REWARD = "buttons/pick_reward"  # "Pick a Reward!" banner over event reward cards
     # Home village (optional)
@@ -129,6 +133,17 @@ class T:
     PLACE_CANCEL = "buttons/place_cancel"
     UPGRADE = "buttons/upgrade"  # under a selected building (gold and elixir versions look alike)
     UPGRADE_CONFIRM = "buttons/upgrade_confirm"  # "Confirm" in the upgrade window
+    # The helpers (farmbot/tasks/helpers.py): beside Buildings & Heroes, a helper's bubble's word
+    # "Available" (idle), and the Builder's Apprentice's face in his; his window's title; its rows'
+    # Assign; the assign window's unticked "Keep assigned" box, and its Confirm (with his face).
+    HELPER_AVAILABLE = "buttons/helper_available"
+    APPRENTICE_FACE = "buttons/apprentice_face"
+    APPRENTICE_TITLE = "buttons/apprentice_title"
+    LAB_ASSISTANT_FACE = "buttons/lab_assistant_face"  # (beside Army Upgrades)
+    LAB_ASSISTANT_TITLE = "buttons/lab_assistant_title"
+    HELPER_ASSIGN = "buttons/helper_assign"
+    HELPER_KEEP = "buttons/helper_keep"
+    HELPER_CONFIRM = "buttons/helper_confirm"
     UPGRADE_MORE = "buttons/upgrade_more"  # under a selected wall: starts picking more of its level
     # then: the words "Add Wall" under the +10 button (left) and the +1 one (only +1
     # when fewer than ten walls of that level are left). The words, not the
@@ -186,6 +201,13 @@ class T:
     BB_COST_ELIXIR = "builder/cost/elixir"
     LOOT_CART = "buttons/loot_cart"  # the "Collect" label over the loot cart
     LOOT_CART_COLLECT = "buttons/loot_cart_collect"  # the Collect button once it is selected
+    CASTLE_BADGE = "redact/castle_badge"  # your own Clan Castle's clan badge, village zoomed out (personal: kept out of git)
+    CASTLE_LABEL = "buttons/castle_label"  # "Full!" or "Request" over the Clan Castle (the same in every clan)
+    TREASURY = "buttons/treasury"  # under the selected Clan Castle
+    TREASURY_TITLE = "buttons/treasury_title"  # the Treasury window's title
+    TREASURY_COLLECT = "buttons/treasury_collect"  # its green Collect button
+    TREASURY_CONFIRM = "buttons/treasury_confirm"  # "Collect Resources?", the question Collect asks
+    TREASURY_OKAY = "buttons/treasury_okay"  # its green Okay
     GRAVESTONE = "collectors/gravestone"  # left by an attacker's troops: tapping one clears them all
     # Full-collector bubbles (one tap empties every collector of that kind)
     COLLECT_GOLD = "collectors/gold"
@@ -198,6 +220,7 @@ class T:
     RATE_NEVER = "buttons/rate_never"  # its NEVER: it isn't asked again
     MAINTENANCE = "buttons/maintenance"  # the "Maintenance break" banner: the game can't be played meanwhile
     OKAY = "buttons/okay"
+    STAR_BONUS_CLAIM = "buttons/star_bonus_claim"  # "Claim" on "Star Bonus received!" (Nov 2026; Okay before)
     REMOVE_ADS = "buttons/remove_ads"  # an ad's window, top right: its Okay opens the ad, its small X closes it
     # Clan (optional)
     REQUEST = "buttons/request"
@@ -209,6 +232,8 @@ class T:
     CONFIRM = "buttons/confirm"  # "Confirm" on notices such as "The Event has ended"
     GEM = "icons/gem"  # a gem: a Confirm window showing one is never pressed
     STORAGE_MAX = "icons/storage_max"  # "Max:" in the box a tapped resource bar opens
+    STAR_BONUS_DONE = "icons/star_bonus_done"  # the green check on Battle: the day's Star Bonus received
+    STAR_BONUS = "icons/star_bonus"  # a star of the Star Bonus strip above Battle (earned or not: see starbonus.py)
     # "Defensive Layout obstructed" after asking for a battle, and its Attack button
     LAYOUT_OBSTRUCTED = "buttons/layout_obstructed"
     OBSTRUCTED_ATTACK = "buttons/obstructed_attack"
@@ -259,8 +284,9 @@ class T:
     AIR_CARDS = "cards/air"  # air troops' card pictures (one per troop): the army is an air army
     GROUND_CARDS = "cards/ground"  # ground troops' card pictures: the army is a ground army
     LURE_CARDS = "cards/lure"  # a cheap troop's card picture: one goes in first to pull out the Clan Castle
-    AIR_DEFENSE = "buildings/air_defense"  # an enemy Air Defense, battle view zoomed out (one per level)
+    AIR_DEFENSE = "buildings/air_defense"  # an enemy Air Defense, battle view zoomed out (a few turns per level)
     CLAN_CASTLE = "buildings/clan_castle"  # an enemy Clan Castle, battle view zoomed out (one per level)
+    LOOT_BUILDINGS = "buildings/loot"  # enemy storages, collectors, drills (any): troops go toward the loot
     DONATE_ITEM_DIR = "donate"  # donate/<unit slug>.png: units in the donate window
     DONATE_WINDOW = "buttons/donate_window"  # the donate window's "Donation Resource" title
     # Digit glyphs (directory, made with ``farmbot learn-digits``)
@@ -352,15 +378,40 @@ VIEW_AGREE = 15  # matches that must agree on the shift (within VIEW_NEAR px)
 VIEW_NEAR = 6
 
 
+# A reference view is matched against several screens in a row (putting the
+# camera back, checking it's still zoomed out): its features are kept, by
+# its memory and shape and a sprinkling of its pixels (so one drawn on since
+# is seen), for the last few looked at.
+_VIEW_KEPT = 4
+_view_features: dict[tuple, tuple[bytes, object, object]] = {}
+_view_features_lock = threading.Lock()
+
+
+def _features(image: np.ndarray):
+    """ORB keypoints and descriptors of the map area of ``image``."""
+    key = (image.__array_interface__["data"][0], image.shape, image.strides)
+    sample = image[::53, ::59].tobytes()
+    with _view_features_lock:
+        kept = _view_features.get(key)
+        if kept is not None and kept[0] == sample:
+            return kept[1], kept[2]
+    x0, y0, x1, y1 = VIEW_AREA
+    mask = np.zeros(image.shape[:2], np.uint8)
+    mask[y0:y1, x0:x1] = 255
+    keys, descriptors = cv2.ORB_create(VIEW_FEATURES).detectAndCompute(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY), mask)
+    with _view_features_lock:
+        _view_features.pop(key, None)
+        while len(_view_features) >= _VIEW_KEPT:
+            del _view_features[next(iter(_view_features))]
+        _view_features[key] = (sample, keys, descriptors)
+    return keys, descriptors
+
+
 def view_shift(reference: np.ndarray, screen: np.ndarray) -> tuple[int, int] | None:
     """How far the map has moved from ``reference`` to ``screen`` (what was
     at p is now at p + shift), or ``None`` if they don't overlap enough."""
-    x0, y0, x1, y1 = VIEW_AREA
-    mask = np.zeros(reference.shape[:2], np.uint8)
-    mask[y0:y1, x0:x1] = 255
-    orb = cv2.ORB_create(VIEW_FEATURES)
-    k1, d1 = orb.detectAndCompute(cv2.cvtColor(reference, cv2.COLOR_BGR2GRAY), mask)
-    k2, d2 = orb.detectAndCompute(cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY), mask)
+    k1, d1 = _features(reference)
+    k2, d2 = _features(screen)
     if d1 is None or d2 is None or len(k1) < 2 or len(k2) < 2:
         return None
     pairs = cv2.BFMatcher(cv2.NORM_HAMMING).knnMatch(d1, d2, k=2)
@@ -438,6 +489,9 @@ class Game:
         # The last battle's army wouldn't go down at all (attack.attack): why, for the bot's alert; else None.
         self.deploy_failed: str | None = None
         self.deploy_origins: dict[str, str] = {}  # the last battle's deploy sides: where their points came from
+        self.deploy_outline: list = []  # the last battle's whole base edge, every side (see deploy_edges)
+        self.last_result = None  # the last battle's stars and damage, off its result screen (see attack.read_result)
+        self.star_plan: dict = {}  # the last battle fought for stars: its plan and times (see farmbot/starlog.py)
         # This round's parts and what the habits add to them (farmbot/timings.py).
         self.ledger = Ledger(clock)
         # New buildings the upgrades put down (not free walls): the bot reads

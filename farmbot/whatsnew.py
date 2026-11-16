@@ -18,6 +18,46 @@ from farmbot.update import STATE, _load, _save, parse_version
 KINDS = ["New", "Improved", "Fixed"]
 
 NOTES: dict[str, list[tuple[str, str, str]]] = {
+    "1.9.0": [
+        ("Fixed", "Works with the November game update",
+         "The bigger Continue button under a chest's reward, the new Request button in clan chat, the "
+         "lighter storage box and the restyled chest room are all recognised again."),
+        ("New", "The daily Star Bonus",
+         "Home battles are fought for stars until the day's five Star Bonus stars are earned, then the "
+         "bonus is claimed and its chest opened. Switch it off under Home village → Attacking."),
+        ("New", "Screens from future updates got past",
+         "When a screen stays unknown, COCFARM reads its buttons' words and taps one that only goes on or "
+         "closes (Skip, Continue, Close), never one that buys or quits."),
+        ("New", "Collect the Clan Castle treasury",
+         "Switch it on under the village's collecting: the castle is found by its \"Request\" or \"Full!\" "
+         "label, at most every 6 hours, and only what fits your storages is taken."),
+        ("New", "Ice and loot bubbles",
+         "Loot bubbles over buildings are told by their colour, so collecting works on any village, and the "
+         "ice cube is collected too (its own Ice switch)."),
+        ("New", "Put the helpers to work",
+         "An idle Builder's Apprentice or Lab Assistant is put on the upgrade or research with the most time "
+         "left."),
+        ("New", "Close COCFARM between upgrades",
+         "When every builder and the laboratory are busy, COCFARM can close the game and itself, and Windows "
+         "opens it again when the first upgrade is done."),
+        ("Improved", "Choose what gets upgraded",
+         "Pick only certain buildings or research, and start spending a resource at an amount you set instead "
+         "of only when its storages are full. Build list names are read, green ones included."),
+        ("New", "Troops toward the loot",
+         "A new placement drops the army by the base's elixir storages and collectors instead of all around."),
+        ("New", "Clan Capital raid report",
+         "After raids, Discord gets each district's % before and after, and the log has a result line for "
+         "every raid. New settings let you try other district orders and spell timings."),
+        ("New", "\"Emulator open\" on the Farms page",
+         "A pill shows which farms' emulator instances are open on this PC, and on their account."),
+        ("New", "Farms carried over to a new folder",
+         "A COCFARM unzipped into a new folder offers to copy your farms, accounts and pictures from the old "
+         "one."),
+        ("Fixed", "The builder base's storages",
+         "Closing the storage box no longer taps the boat under it and sails home."),
+        ("Improved", "A refreshed window",
+         "New icons and a tidier layout across the pages."),
+    ],
     "1.5.4": [
         ("New", "Clan war and ranked battles (beta)",
          "COCFARM can make your war attacks on battle day and the day's ranked battles. These are fought for "

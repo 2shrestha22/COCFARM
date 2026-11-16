@@ -24,7 +24,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from farmbot import screens
+from farmbot import screens, starlog
 from farmbot.config import Config
 from farmbot.game import Game, T
 from farmbot.geometry import Rect
@@ -38,7 +38,7 @@ BADGE_RED = 0.25  # of it red at least (0.6 with the badge, next to none without
 BUTTON_LOOKS = 8  # looks for the war button before it's taken as not there
 OPEN_WAIT = 12  # s for the war to open
 BATTLE_WAIT = 45  # s from Attack! to the base on screen
-CONFIRM = Rect(280, 250, 620, 410)  # the "Confirm Attack" question
+CONFIRM = attack.CONFIRM  # the "Confirm Attack" question
 STEP_WAIT = 1.0  # s for the panel to show the next base
 MOST_BASES = 50  # a war has at most 50 a side
 MOST_ATTACKS = 2
@@ -284,25 +284,10 @@ def go_to(game: Game, at: int, number: int) -> None:
 
 # -- the attacks -------------------------------------------------------------
 def to_battle(game: Game) -> bool:
-    """From the tap on a base's Attack! to the base on screen: the war
-    army's window (its own Attack!), then "Confirm Attack" (this is where
-    one of the war's attacks is spent). True once the battle's End Battle
-    shows."""
-    deadline = game.clock() + BATTLE_WAIT
-    while game.clock() < deadline:
-        game.wait(1.0, exact=True)
-        game.refresh()
-        if game.find(T.WAR_CONFIRM_TITLE):
-            # Only its own green Attack!: a tap beside the question closes it.
-            if game.click(T.WAR_CONFIRM_ATTACK, region=game.region(CONFIRM)):
-                log.debug("War: confirmed the attack")
-            continue
-        if game.click(T.WAR_ARMY_ATTACK) or (game.has(T.ARMY_ATTACK) and game.click(T.ARMY_ATTACK)):
-            log.debug("War: the war army's Attack!")
-            continue
-        if game.find(T.END_BATTLE):
-            return True
-    return False
+    """From the tap on a base's Attack! to the base on screen (the war
+    army's window, then "Confirm Attack"): ``attack.into_battle``, shared
+    with ranked battles. True once the battle's End Battle shows."""
+    return attack.into_battle(game, BATTLE_WAIT, "War")
 
 
 def attacks(game: Game, cfg: Config, dry_run: bool = False) -> int:
@@ -369,6 +354,7 @@ def attacks(game: Game, cfg: Config, dry_run: bool = False) -> int:
                 if not to_battle(game):
                     raise WarError(f"Attack! on base {pick.number} led to no battle")
                 attack.attack(game, cfg, for_stars=True, war_map=True)
+                starlog.record(game, cfg, "war", note=f"base {pick.number}")
                 done += 1
                 fought = True
                 # Home between attacks: the war button there says whether another is left.

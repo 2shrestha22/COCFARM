@@ -164,17 +164,30 @@ def own_resources(game: Game, regions: RegionsConfig, shift: int = 0) -> Loot | 
 # it again closes it (in the builder base too). The "Max:" label is
 # smaller than the number, so pieces shorter than the digits are left out.
 MAX_STYLE = TextStyle(min_height_ratio=0.85)
-MAX_ROW = (33, 30)  # top and height of the "Max:" row, below the bar's middle
-MAX_SPAN = (190, 40)  # the row reaches this far left of the bar's number and right of it
+# The box's look and place change with the game's updates (November 2026:
+# light, wider, with "Production per hour" and "In treasury" rows under
+# "Max:"), so "Max:" is looked for anywhere in a wide area under the bar
+# (any look of it in icons/storage_max/) and its number read on its row.
+MAX_AREA = (10, 100)  # top and height of where "Max:" may be, below the bar's middle
+MAX_SPAN = (430, 40)  # the area reaches this far left of the bar's number and right of it
+MAX_ROW_HEIGHT = 30  # the "Max:" row's number, centred on the label
 LEAST_STORAGE = 1000  # no storage holds less (a town hall 1's gold storage holds 1 500)
 ROUND_SIZE = 500  # what storages hold comes in steps of this at least
 OVER_FULL = 3  # a storage holding more than its size holds at most this many times it
 
 
 def _max_region(game: Game, regions: RegionsConfig, kind: str) -> Rect:
+    """Where the box's "Max:" label can be, under the ``kind`` bar."""
     r = game.region(regions.rect(f"own_{kind}"))
     middle = r.y + r.h // 2
-    return Rect(r.x + r.w - MAX_SPAN[0], middle + MAX_ROW[0], MAX_SPAN[0] + MAX_SPAN[1], MAX_ROW[1])
+    left = max(r.x + r.w - MAX_SPAN[0], 0)
+    return Rect(left, middle + MAX_AREA[0], r.x + r.w + MAX_SPAN[1] - left, MAX_AREA[1])
+
+
+def _max_number_region(label, area: Rect) -> Rect:
+    """The "Max:" row's number: right of its label, to the area's right edge."""
+    x = label.x + label.w // 2 + 2
+    return Rect(x, label.y - MAX_ROW_HEIGHT // 2, area.x + area.w - x, MAX_ROW_HEIGHT)
 
 
 def has_dark(game: Game, regions: RegionsConfig, shift: int = 0) -> bool:
@@ -200,20 +213,35 @@ def storage_max(game: Game, regions: RegionsConfig, kind: str) -> int | None:
     bar = (r.x + r.w // 2, r.y + r.h // 2)
     where = _max_region(game, regions, kind)
 
+    def label():
+        # The topmost "Max:" (the box's first row).
+        found = game.find_all(T.STORAGE_MAX, region=where)
+        return min(found, key=lambda m: m.y) if found else None
+
     def is_open() -> bool:
         game.refresh()
-        return game.find(T.STORAGE_MAX, region=where) is not None
+        return label() is not None
 
     most = None
     for _ in range(2):  # a second tap if the game missed the first
         game.tap(*bar)
         if _soon(game, is_open, MAX_OPENS):
-            most = game.vision.read_number(game._current(), where, T.LOOT_FONT, MAX_STYLE)
+            m = label()
+            if m is not None:
+                most = game.vision.read_number(game._current(), _max_number_region(m, where), T.LOOT_FONT,
+                                               MAX_STYLE)
             break
-    for _ in range(2):  # close it
-        if not is_open():
+    # Close it: the bar again (it closes the dark, see-through box, still the
+    # builder base's), then, if that left it open, a tap on the box itself
+    # (the home village's light box since November 2026 stays open, and covers
+    # the next bar down; it takes the tap). Never the see-through box first:
+    # a tap on it reaches what's under it (the builder base's boat: home).
+    for close in ("bar", "box", "bar"):
+        game.refresh()
+        m = label()
+        if m is None:
             break
-        game.tap(*bar)
+        game.tap(*((m.x, m.y) if close == "box" else bar))
         if _soon(game, lambda: not is_open(), MAX_CLOSES):
             break
     return most
@@ -283,8 +311,13 @@ def start_search(game: Game, super_troops: bool = False, dark: int | None = None
         raise SearchError("battle button not visible; is the home village showing?")
     if not _find_a_match(game, timeout=5):
         # A tap on Battle can go unanswered (the village just back from an
-        # attack, say): still on the village, tap it once more.
-        if not (game.click(T.BATTLE) and _find_a_match(game, timeout=5)):
+        # attack, say), or open a window first (the game's news, "League
+        # Overview" after an update): closed, and Battle tapped once more.
+        from farmbot.tasks.village import clear_popups
+
+        if clear_popups(game, rounds=2):
+            log.info("A window opened instead of the battle menu: closed it")
+        if not (game.find(T.FIND_MATCH) or game.click(T.BATTLE)) or not _find_a_match(game, timeout=5):
             raise SearchError("find-a-match button did not appear")
     # Newer versions confirm the army first; older ones go straight to scouting.
     boosted = 0

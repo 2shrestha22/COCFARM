@@ -388,7 +388,11 @@ def busy(game: Game) -> bool:
 
 
 def _left_out(game: Game, lst: BuildList = HOME) -> list[int]:
-    """Where the names of the rows ``lst`` leaves alone are."""
+    """Where the names of the rows ``lst`` leaves alone are. Walls and the
+    Town Hall are only ever in the buildings' tab: elsewhere "Wall" is a
+    Wall Breaker's research, never left out."""
+    if tab_open(game, "buildings", lst) is False:
+        return []
     return [m.y for name in lst.left_out if game.has(name) for m in game.find_all(name)]
 
 
@@ -485,17 +489,26 @@ def list_still(before: np.ndarray | None, after: np.ndarray | None) -> bool:
 
 
 def first_affordable(game: Game, budget: dict[str, int], lst: BuildList = HOME,
-                     skip: set[tuple[str, int]] | None = None) -> Row | None:
+                     skip: set[tuple[str, int]] | None = None, only: frozenset[str] | None = None) -> Row | None:
     """In a tab sorted Cost Max, scroll down to the first row that
     ``budget`` (resource -> amount) covers: the dearest upgrade it can pay
     for, passing over rows priced as in ``skip`` (resource, price): ones
-    already tried that wouldn't upgrade. ``None`` if the list ends without one."""
+    already tried that wouldn't upgrade. With ``only``, just rows whose
+    name is read as one of those buildings (see row_names.py; none if
+    the names can't be read). ``None`` if the list ends without one."""
     w, h = game.size
     x, y = w - LIST_SWIPE_X, h - LIST_SWIPE_FROM_BOTTOM
     game.refresh()
     for _ in range(MAX_SORTED_SCROLLS):
         found = [r for r in rows(game, tuple(budget), lst)
                  if r.price <= budget[r.kind] and (r.kind, r.price) not in (skip or ())]
+        if found and only:
+            from farmbot.tasks import row_names
+
+            named = row_names.names(game, found, lst)
+            if named is None:
+                return None  # can't tell which is which: nothing's known to be picked
+            found = [r for r in found if named[r] in only]
         if found:
             return found[0]
         if list_ends_here(game):
@@ -506,6 +519,142 @@ def first_affordable(game: Game, budget: dict[str, int], lst: BuildList = HOME,
         game.refresh()  # (looked at for rows on the next turn)
         if list_still(before, game.screen):
             return None  # the list's end
+    return None
+
+
+def picked_rows(game: Game, budget: dict[str, int], lst: BuildList, picks: tuple[str, ...],
+                skip: set[tuple[str, int]] | None = None,
+                which: str = "buildings") -> list[tuple[int, Row, str]] | None:
+    """In a tab sorted Cost Max, look the list through, top to bottom, for
+    the rows ``budget`` covers whose name is one of ``picks`` (see
+    row_names.py): (place in ``picks``, row, name) for each, dearest first.
+    It stops at the first of the top pick: nothing else would go before it.
+    None if the names can't be read. The list is left scrolled down."""
+    from farmbot.tasks import row_names
+
+    rank = {name: i for i, name in enumerate(picks)}
+    w, h = game.size
+    x, y = w - LIST_SWIPE_X, h - LIST_SWIPE_FROM_BOTTOM
+    out: list[tuple[int, Row, str]] = []
+    had: set[tuple[str, int, str]] = set()  # (a row on two pages is the same row)
+    game.refresh()
+    for _ in range(MAX_SORTED_SCROLLS):
+        found = [r for r in rows(game, tuple(budget), lst)
+                 if r.price <= budget[r.kind] and (r.kind, r.price) not in (skip or ())]
+        if found:
+            named = row_names.names(game, found, lst, which)
+            if named is None:
+                return None
+            for r in found:
+                name = named[r]
+                if name in rank and (r.kind, r.price, name) not in had:
+                    had.add((r.kind, r.price, name))
+                    out.append((rank[name], r, name))
+                    if rank[name] == 0:
+                        return out
+        if list_ends_here(game):
+            break
+        before = game.screen
+        game.swipe(x, y, x, y - LIST_PAGE, duration_ms=SLOW_SWIPE_MS)
+        game.wait(0.8)
+        game.refresh()
+        if list_still(before, game.screen):
+            break
+    return out
+
+
+def find_row(game: Game, kind: str, price: int, name: str, lst: BuildList = HOME,
+             which: str = "buildings") -> Row | None:
+    """Bring back into view the row of ``name`` priced ``price`` in
+    ``kind``, wherever the list is scrolled to: up to the top, then down.
+    None if it isn't there (any more)."""
+    from farmbot.tasks import row_names
+
+    w, h = game.size
+    x, y = w - LIST_SWIPE_X, h - LIST_SWIPE_FROM_BOTTOM
+    game.refresh()
+    for up in (True, False):
+        for _ in range(MAX_SORTED_SCROLLS):
+            here = [r for r in rows(game, (kind,), lst) if r.price == price]
+            named = row_names.names(game, here, lst, which) if here else {}
+            if named is None:
+                return None
+            for r in here:
+                if named[r] == name:
+                    return r
+            if not up and list_ends_here(game):
+                break
+            before = game.screen
+            if up:
+                game.swipe(x, y - LIST_PAGE, x, y, duration_ms=SLOW_SWIPE_MS)
+            else:
+                game.swipe(x, y, x, y - LIST_PAGE, duration_ms=SLOW_SWIPE_MS)
+            game.wait(0.8)
+            game.refresh()
+            if list_still(before, game.screen):
+                break
+    return None
+
+
+def upgradable_names(game: Game, lst: BuildList = HOME, which: str = "buildings") -> set[str] | None:
+    """Every name in the open tab's list, top to bottom, whatever it costs:
+    what can still be upgraded (or built) there. Filtered by nothing; only
+    a list read through to its end with every row's name read counts, else
+    None (so one misread never makes a building look maxed)."""
+    from farmbot.tasks import row_names
+
+    if not set_filter(game, None, None, T.SORT_COST_MAX, lst):
+        return None
+    to_top(game)
+    try:
+        return _names_to_the_end(game, lst, which)
+    finally:
+        to_top(game)  # (as the upgrades after it expect: a list from its top)
+
+
+def to_top(game: Game) -> None:
+    """Scroll the open list up to its top, wherever it was."""
+    w, h = game.size
+    x, y = w - LIST_SWIPE_X, h - LIST_SWIPE_FROM_BOTTOM
+    game.refresh()
+    for _ in range(MAX_SORTED_SCROLLS):
+        before = game.screen
+        game.swipe(x, y - LIST_PAGE, x, y, duration_ms=SLOW_SWIPE_MS)
+        game.wait(0.8)
+        game.refresh()
+        if list_still(before, game.screen):
+            return
+
+
+def _names_to_the_end(game: Game, lst: BuildList, which: str) -> set[str] | None:
+    from farmbot.tasks import row_names
+
+    w, h = game.size
+    x, y = w - LIST_SWIPE_X, h - LIST_SWIPE_FROM_BOTTOM
+    seen: set[str] = set()
+    for _ in range(MAX_SORTED_SCROLLS):
+        # Every name on the page (a row whose price isn't made out still has its name); and
+        # every price with a name above it, else a name's been missed.
+        lines = row_names.read(game, lst, which)
+        if lines is None:
+            return None
+        found = rows(game, lst.resources, lst)
+        named = row_names.match(found, lines)
+        # (A row at the list's top edge may have its name cut off: read on the page before.)
+        unread = [r for r in found if named[r] is None and r.y + WALL_ROW_BAND[0] >= LIST_TOP]
+        if unread:
+            log.info("Upgrades: %d row(s) of the list without a name read: not sure what's left to upgrade",
+                     len(unread))
+            return None
+        seen |= {n for _, n in lines if n}
+        if list_ends_here(game):
+            return seen
+        before = game.screen
+        game.swipe(x, y, x, y - LIST_PAGE, duration_ms=SLOW_SWIPE_MS)
+        game.wait(0.8)
+        game.refresh()
+        if list_still(before, game.screen):
+            return seen
     return None
 
 

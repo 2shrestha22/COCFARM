@@ -6,13 +6,13 @@ import itertools
 import logging
 import math
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Iterator
 
 import numpy as np
 
-from farmbot import armybar, buildings, deployzone, human, plan, redline as rl, text
+from farmbot import armybar, buildings, deployzone, human, lootspots, plan, redline as rl, result, text
 from farmbot.armybar import Card
 from farmbot.config import Config
 from farmbot.game import VIEW_STILL, Game, T, view_change
@@ -38,6 +38,7 @@ def deploy_edges(game: Game, cfg: Config, war_map: bool = False) -> tuple[dict[s
     found: dict[str, list[Point]] = {}
     sources: dict[str, str] = {}
     center: Point | None = None
+    outline: list[Point] = []  # the whole base's edge, as first found (see :func:`loot_front`)
     detectors = (
         ("red line", cfg.redline.enabled, lambda: rl.detect(screen, cfg.redline), cfg.redline.min_side_points),
         ("building ring", cfg.zone.enabled, lambda: deployzone.detect(screen, cfg.zone), 1),
@@ -47,6 +48,8 @@ def deploy_edges(game: Game, cfg: Config, war_map: bool = False) -> tuple[dict[s
         if result is None:
             return
         blocked = deployzone.open_ground(on, cfg.zone) if name == "red line" and not war_map else None
+        if not outline:
+            outline.extend(p for pts in result.sides.values() for p in pts)  # every side's, in use or not
         for side in sides:
             points = result.sides.get(side, [])
             if name == "red line" and not war_map:
@@ -77,6 +80,7 @@ def deploy_edges(game: Game, cfg: Config, war_map: bool = False) -> tuple[dict[s
                 found[s], sources[s] = lines[s], "fixed line"
     log.info("Deploy points: %s", ", ".join(f"{s} {len(found[s])} ({sources[s]})" for s in sides))
     game.deploy_origins = dict(sources)
+    game.deploy_outline = outline
     return found, center
 
 
@@ -748,6 +752,8 @@ def finish_battle(game: Game, cfg: Config, target: Loot | None = None,
                        battle_timeout=max(acfg.battle_timeout, STAR_BATTLE))
         target = room = None
     started = last_change = game.clock()
+    if for_stars and game.star_plan:
+        game.star_plan.setdefault("times", {})["battle"] = started
     last_loot = None
     can_return = game.has(T.RETURN_HOME) and game.has(T.SURRENDER_OK)
     # Human-like: how long without loot before leaving, and the share of
@@ -801,6 +807,8 @@ def finish_battle(game: Game, cfg: Config, target: Loot | None = None,
             game.click_when_visible(T.SURRENDER_OK, timeout=5)
             break
         _wait(game, cfg, 2, note=False)  # (a longer look doesn't make the battle longer)
+    if for_stars and game.star_plan:
+        game.star_plan.setdefault("times", {})["end"] = game.clock()
     taken = taken_share(target, last_loot, cfg) if target and last_loot else None
     if taken is not None:
         log.info("Took %d%% of the base's loot", taken * 100)
@@ -811,6 +819,7 @@ def finish_battle(game: Game, cfg: Config, target: Loot | None = None,
                              f"after the battle "
                              f"({game.scores(T.RETURN_HOME, T.END_BATTLE, T.SURRENDER_OK)}; UI scale "
                              f"{game.ui_scale or 1.0:.2f})")
+    read_result(game)
     look_at_result(game)
     if not return_home(game):
         # Tapped, and still showing: the next round's popup check tries again.
@@ -878,6 +887,35 @@ def _gone(game: Game) -> bool:
         if not game.find(T.RETURN_HOME):
             return True
     return False
+
+
+RESULT_READS = 6  # tries at a steady reading of the stars and damage (they count up)
+
+
+def read_result(game: Game) -> result.Result | None:
+    """The battle's stars and Total damage off its result screen, once two
+    readings agree (kept in ``game.last_result``); None if not read."""
+    try:
+        font = game.vision.font(T.LOOT_FONT)
+    except Exception:  # noqa: BLE001 (no font: the stars alone)
+        font = None
+    last, found = object(), None
+    for attempt in range(RESULT_READS):
+        if attempt:
+            game.wait(0.6, exact=True)
+            game.refresh()
+        now = result.read(game.screen, font)
+        if now == last and (now is None or now.damage is not None):
+            found = now
+            break
+        last = now
+    else:
+        found = last if isinstance(last, result.Result) else None
+    game.last_result = found
+    if found is not None:
+        log.info("Result: %d star%s, %s damage", found.stars, "" if found.stars == 1 else "s",
+                 "?" if found.damage is None else f"{found.damage}%")
+    return found
 
 
 def look_at_result(game: Game) -> None:
@@ -988,6 +1026,7 @@ def _bar_cards(game: Game, cfg: Config) -> list[Card]:
 
 
 BASE_SCREENS = Path("screens/bases")  # the last few war and ranked bases: to cut building pictures from
+LOOT_SCREENS = Path("screens/loot_bases")  # the last few bases troops went toward the loot on: the same
 
 
 class BaseRead:
@@ -1029,10 +1068,99 @@ def read_army_and_base(game: Game, cfg: Config) -> BaseRead:
     castle = next(iter(buildings.find(game.vision, screen, T.CLAN_CASTLE)), None) if lure else None
     if lure is not None and castle is None:
         log.info("Lure troop brought, but the Clan Castle wasn't found: no lure this battle")
-    air = buildings.find(game.vision, screen, T.AIR_DEFENSE) if kind == "air" else []
+    air = buildings.find(game.vision, screen, T.AIR_DEFENSE, buildings.AIR_DEFENSE_LIKENESS) if kind == "air" else []
     if kind:
         log.info("The army is a%s %s army", "n" if kind == "air" else "", kind)
     return BaseRead(kind, lure if castle else None, castle, air)
+
+
+@dataclass
+class LootFront:
+    """Where troops go toward the loot (see :func:`loot_front`)."""
+    sides: list[str]  # the sides nearest the heaps of loot, troops split between them
+    stretches: dict[str, list[Point]]  # each usable side's stretch nearest the loot (spare ones too)
+    heaps: list[Point]  # where each heap of loot sits, biggest first
+
+
+def loot_front(game: Game, cfg: Config, edges: dict[str, list[Point]], target: Loot | None = None
+               ) -> LootFront | None:
+    """For troops going toward the loot: each big heap of loot on the base
+    (storages spread round it make several), the side nearest it and the
+    stretch of that side's points nearest it, troops split between those
+    sides. The other usable sides get their stretch nearest the loot too,
+    for when the game refuses the ones picked. None (spread as usual) when
+    no loot, or no side on the base itself, was found. Looked for on the
+    screen the deploy points were measured on, inside them (see
+    ``farmbot/lootspots.py``); ``target``, the base's loot as scouted,
+    weighs gold against elixir."""
+    from farmbot.tasks.village import _keep_screen
+
+    origins = game.deploy_origins or {}
+    usable = [s for s in cfg.attack.sides if origins.get(s) in plan.TRUSTED and edges.get(s)]
+    if not usable:
+        log.info("Toward the loot: the base's edge wasn't found; troops spread as usual")
+        return None
+    screen = game.screen if game.screen is not None else game.refresh()
+    _keep_screen(LOOT_SCREENS, screen)  # (to cut loot building pictures from)
+    outline = game.deploy_outline or [p for s in usable for p in edges[s]]  # (the whole base)
+    taught = buildings.find(game.vision, screen, T.LOOT_BUILDINGS)
+    spots = lootspots.find(screen, outline, cfg.zone.exclude, taught)
+    width = screen.shape[1]
+    found = [at for at, _ in lootspots.heaps(spots, width, target)]
+    if not found:
+        log.info("Toward the loot: no storage or collector was seen plainly; troops spread as usual")
+        return None
+    # A stream of points per heap, so each heap gets an even share of the
+    # troops: named for its side ("nw"), or "nw-2" for a second heap nearest
+    # the same side (the side's name is what the red line moves onto).
+    stretches: dict[str, list[Point]] = {}
+    sides, names = [], []
+    for at in found:
+        side = plan.nearest_side(edges, usable, at)
+        name = side if side not in stretches else f"{side}-{sum(s.split('-')[0] == side for s in sides) + 1}"
+        stretches[name] = lootspots.front(edges[side], at, width)
+        sides.append(name)
+        names.append(side)
+    for s in usable:  # spares: toward the heap nearest them
+        if s not in stretches:
+            at = min(found, key=lambda h: min(math.dist(h, p) for p in edges[s]))
+            stretches[s] = lootspots.front(edges[s], at, width)
+    log.info("Toward the loot: %d heap(s) of loot seen, at %s (%d elixir patch(es), %d taught building(s)); "
+             "troops go in from the %s side%s, on the points nearest each", len(found),
+             ", ".join(map(str, found)), sum(s.kind == "elixir" for s in spots),
+             sum(s.kind == "taught" for s in spots), ", ".join(names), "" if len(found) == 1 else "s")
+    return LootFront(sides, stretches, found)
+
+
+CONFIRM = Rect(280, 250, 620, 410)  # the "Confirm Attack" question (war and ranked alike)
+
+
+def into_battle(game: Game, timeout: float, who: str) -> bool:
+    """From a war base's or Ranked Battle's Find a Match to the base on
+    screen, as both go: the army's window (its own Attack!), then "Confirm
+    Attack" (this is where one of the day's or the war's attacks is spent),
+    and an obstructed layout's question if the game asks. True once the
+    battle's End Battle shows. ``who``: "War" or "Ranked", for the log."""
+    deadline = game.clock() + timeout
+    while game.clock() < deadline:
+        game.wait(1.0, exact=True)
+        game.refresh()
+        if game.find(T.WAR_CONFIRM_TITLE):
+            # Only its own green Attack!: a tap beside the question closes it.
+            if game.click(T.WAR_CONFIRM_ATTACK, region=game.region(CONFIRM)):
+                log.debug("%s: confirmed the attack", who)
+            continue
+        if game.click(T.WAR_ARMY_ATTACK) or (game.has(T.ARMY_ATTACK) and game.click(T.ARMY_ATTACK)):
+            log.debug("%s: the army's Attack!", who)
+            continue
+        if game.has(T.LAYOUT_OBSTRUCTED) and game.find(T.LAYOUT_OBSTRUCTED):
+            from farmbot.tasks.village import attack_despite_obstructed_layout
+
+            attack_despite_obstructed_layout(game)
+            continue
+        if game.find(T.END_BATTLE):
+            return True
+    return False
 
 
 def lure_out(game: Game, cfg: Config, card: Card, at: Point) -> None:
@@ -1056,11 +1184,13 @@ def attack(game: Game, cfg: Config, target: Loot | None = None, room: dict[str, 
     than fits on the screen, it's deployed a screenful at a time, in that
     order, scrolling on until its end."""
     acfg = cfg.attack
+    game.star_plan = {"times": {"start": game.clock()}} if for_stars else {}
     game.look_around()  # "Look around before deploying": before the view is measured
     # The game centres a battle's view by itself, at the village's zoom: a
     # zoom-out is all it needs.
     game.zoom_out()
     game.deploy_origins = {}  # (filled by deploy_edges)
+    game.deploy_outline = []
     edges, center = deploy_edges(game, cfg, war_map)
     if center is None and (cfg.redline.enabled or cfg.zone.enabled):
         # Neither found the base: most likely still zoomed in (a pinch the
@@ -1078,17 +1208,29 @@ def attack(game: Game, cfg: Config, target: Loot | None = None, room: dict[str, 
     read = read_army_and_base(game, cfg) if for_stars and acfg.star_focus != "spread" else BaseRead()
     focus = plan.focus_sides(edges, game.deploy_origins, acfg.sides, acfg.star_focus, game.rng,
                              read.toward) if for_stars else None
+    toward_loot = not for_stars and acfg.placement == "loot"
+    troop_edges = edges  # where troops and heroes go: toward the loot, each side's stretch nearest it
+    loot_pick = loot_front(game, cfg, edges, target) if toward_loot else None
+    if for_stars:
+        kept = sorted(BASE_SCREENS.glob("*.png")) if acfg.star_focus != "spread" else []  # (read_army_and_base's)
+        game.star_plan.update(push=list(focus or []), kind=read.kind, air_defenses=list(read.air_defenses),
+                              castle=read.castle, lure=read.lure is not None, center=center,
+                              outline=list(game.deploy_outline or []), origins=dict(game.deploy_origins or {}),
+                              base_screen=kept[-1].name if kept else "")
     if focus:
         sides = focus
         log.info("Fought for stars: the army goes in from the %s side%s", " and ".join(sides),
                  "" if len(sides) == 1 else "s")
+    elif loot_pick:
+        sides = loot_pick.sides
+        troop_edges = {**edges, **loot_pick.stretches}
     elif game.uses("few_sides"):
         # (Only sides that have points: one with none would leave nowhere to go.)
         sides = human.fewer_sides(game.rng, [s for s in acfg.sides if edges.get(s)]) or acfg.sides
         if len(sides) < len(acfg.sides):
             log.info("This battle goes in from the %s side%s", " and ".join(sides), "" if len(sides) == 1 else "s")
     spare = [s for s in acfg.sides if s not in sides]  # brought in if the ones picked are refused
-    edge_points = cycle_points(edges, sides, game.rng, _rhythm(cfg), spare)
+    edge_points = cycle_points(troop_edges, sides, game.rng, _rhythm(cfg), spare)
     fixed_points = cycle_points(fixed_lines(game.size[0], cfg), sides, game.rng, _rhythm(cfg), spare)
     edge_points.war_map = fixed_points.war_map = war_map
     def aim() -> Point:
@@ -1110,7 +1252,7 @@ def attack(game: Game, cfg: Config, target: Loot | None = None, room: dict[str, 
         this battle, pinch out for real. A view that moves was zoomed in
         (the points were measured on it, and sat inside the base): the
         deploy points are found again on the zoomed-out one."""
-        nonlocal edges, center, edge_points, fixed_points, over_base, spot, rescued
+        nonlocal edges, center, edge_points, fixed_points, over_base, spot, rescued, troop_edges, sides, spare
         if rescued or edge_points.seen_land or fixed_points.seen_land:
             return None
         rescued = True
@@ -1120,7 +1262,16 @@ def attack(game: Game, cfg: Config, target: Loot | None = None, room: dict[str, 
         log.warning("No troop was going out and the view was still zoomed in: zoomed out, finding the deploy "
                     "points again")
         edges, center = deploy_edges(game, cfg, war_map)
-        edge_points = cycle_points(edges, sides, game.rng, _rhythm(cfg), spare)
+        troop_edges = edges
+        if toward_loot:
+            # (looked for again on the zoomed-out view)
+            pick = loot_front(game, cfg, edges, target)
+            if pick:
+                sides, troop_edges = pick.sides, {**edges, **pick.stretches}
+            else:
+                sides = list(acfg.sides)
+            spare = [s for s in acfg.sides if s not in sides]
+        edge_points = cycle_points(troop_edges, sides, game.rng, _rhythm(cfg), spare)
         fixed_points = cycle_points(fixed_lines(game.size[0], cfg), sides, game.rng, _rhythm(cfg), spare)
         edge_points.war_map = fixed_points.war_map = war_map
         over_base = spell_points(edges, center, acfg.spell_reach)
@@ -1272,10 +1423,16 @@ def fire_abilities_on_time(game: Game, cards: list[Card], cfg: Config, since: fl
 def fire_abilities_when_hurt(game: Game, cards: list[Card], cfg: Config, since: float | None = None) -> None:
     """Watch each placed hero's health bar and fire its ability once it drops
     to ``ability_health``, or when its bar disappears (about to fall), or at
-    ``ability_max_wait`` at the latest (counted from ``since``, or now)."""
+    ``ability_max_wait`` at the latest (counted from ``since``, or now).
+
+    A bar that has never shown (just landed and not drawn yet, or a card
+    with no bar the bot can read) is no sign of a fall: that card fires
+    on the timer instead, ``hero_ability_delay`` from ``since``. Firing it
+    at once wasted the ability (15 Nov trials: 68 of 125 went off so)."""
     acfg = cfg.attack
     on = _rhythm(cfg)
     waiting = list(cards)
+    seen: set[int] = set()  # cards whose bar has shown (by id: a Card may not hash)
     # Human-like: each hero's own threshold, and its own last moment.
     limit = {card: human.threshold(game.rng, acfg.ability_health, on) for card in cards}
     start = game.clock() if since is None else since
@@ -1291,13 +1448,18 @@ def fire_abilities_when_hurt(game: Game, cards: list[Card], cfg: Config, since: 
         for card in list(waiting):
             health = armybar.hero_health(screen, card)
             late = now >= deadline[card]
-            if late or health is None or health <= limit[card]:
+            if health is not None:
+                seen.add(id(card))
+            gone = health is None and id(card) in seen
+            unread = health is None and id(card) not in seen and now - start >= acfg.hero_ability_delay
+            if late or gone or unread or (health is not None and health <= limit[card]):
                 if on and not late and health is not None:
                     game.wait(human.reaction(game.rng), exact=True)  # seen, then tapped
                 game.tap(*card.center)
                 game.wait(0.15)
                 waiting.remove(card)
                 log.info("Ability at x=%d: %s", card.left, "time's up" if late else
-                         "health gone" if health is None else f"health {health:.0%}")
+                         "health gone" if gone else "no bar seen, on the timer" if unread
+                         else f"health {health:.0%}")
         if waiting:
             game.wait(ABILITY_CHECK)

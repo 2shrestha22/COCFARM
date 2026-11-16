@@ -183,15 +183,25 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def cmd_gui(args: argparse.Namespace) -> int:
+    if args.start:
+        from farmbot.gui_wake import hand_over_start
+
+        if hand_over_start():  # a COCFARM is open: it starts instead
+            return 0
     from farmbot import splash  # Qt is only needed here
 
     splash.show()  # while the rest loads
     from farmbot import installed
     from farmbot.gui import run_gui
 
+    if installed.built():
+        from farmbot import carry
+
+        # Before this folder takes over Installed apps: where your farms were until now.
+        carry.look(Path(args.config or "farmbot.toml").resolve().parent)
     installed.ensure()  # in the Start menu and Installed apps
 
-    return run_gui(args.config or "farmbot.toml", args.serial)
+    return run_gui(args.config or "farmbot.toml", args.serial, start=args.start)
 
 
 def cmd_uninstall(args: argparse.Namespace) -> int:
@@ -208,6 +218,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("gui", help="open the control window")
+    p.add_argument("--start", action="store_true",
+                   help="start farm 1 straight away (Windows opens COCFARM so: Close COCFARM between upgrades)")
     p.set_defaults(func=cmd_gui)
 
     p = sub.add_parser("uninstall", help="remove COCFARM (the built exe's folder), after asking")

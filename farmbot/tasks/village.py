@@ -11,7 +11,7 @@ from typing import Callable
 import cv2
 import numpy as np
 
-from farmbot import imagefile
+from farmbot import bubbles, imagefile, redact
 from farmbot.config import WallsConfig
 from farmbot.game import Game, T
 from farmbot.geometry import Rect
@@ -24,7 +24,8 @@ from farmbot.tasks.search import Loot
 log = logging.getLogger(__name__)
 
 # Buttons that dismiss interruptions, in the order they are tried.
-POPUP_BUTTONS = (T.TRY_AGAIN, T.RELOAD, T.RETURN_HOME, T.BB_RETURN_HOME, T.BB_OKAY, T.CONTINUE, T.OKAY, T.CLOSE)
+POPUP_BUTTONS = (T.TRY_AGAIN, T.RELOAD, T.RETURN_HOME, T.BB_RETURN_HOME, T.BB_OKAY, T.CONTINUE, T.STAR_BONUS_CLAIM,
+                 T.OKAY, T.CLOSE)
 
 # The chest sits this far below the chest room's window picture (the top
 # half of the window: a chest's glow covers the rest), in the picture's own heights. It opens after about four taps; tapping on once the
@@ -34,22 +35,75 @@ CHEST_MAX_TAPS = 6
 CHEST_MAX_REWARDS = 8
 
 
+CHEST_MIDDLE = (0.5, 0.49)  # where a chest sits in a room without the window, in the screen's width and height
+SKIP_AREA = (0.75, 0.70)  # the chest room's Skip is right of and below these shares of the screen
+TAP_AREA = (0.3, 0.1, 0.4, 0.4)  # where "Tap!" over a chest may be: left, top, width, height (shares)
+
+
+def chest_room(game: Game, refresh: bool = False):
+    """The chest room's window picture (the chest is under it), its Skip
+    button or the "Tap!" over its chest, whichever shows: ``(match,
+    is_window)``, or ``None``. Skip and "Tap!" are the same in every room,
+    whatever the event's scenery."""
+    if refresh:
+        game.refresh()
+    if game.has(T.EVENT_CHEST):
+        room = game.find(T.EVENT_CHEST)
+        if room is not None:
+            return room, True
+    if game.has(T.CHEST_SKIP):
+        w, h = game.size
+        skip = game.find(T.CHEST_SKIP, region=Rect(int(w * SKIP_AREA[0]), int(h * SKIP_AREA[1]),
+                                                   w - int(w * SKIP_AREA[0]), h - int(h * SKIP_AREA[1])))
+        if skip is not None:
+            return skip, False
+    if game.has(T.CHEST_TAP):
+        w, h = game.size
+        tap = game.find(T.CHEST_TAP, region=Rect(int(w * TAP_AREA[0]), int(h * TAP_AREA[1]),
+                                                 int(w * TAP_AREA[2]), int(h * TAP_AREA[3])))
+        if tap is not None:
+            return tap, False
+    return None
+
+
+def in_chest_room(game: Game, refresh: bool = False) -> bool:
+    return chest_room(game, refresh) is not None
+
+
 def open_event_chests(game: Game, limit: int = 3) -> int:
-    """During events a chest can follow the battle result: tap it until the
-    reward shows, then press Continue. Returns how many were opened."""
-    if not game.has(T.EVENT_CHEST) or not game.has(T.CONTINUE):
+    """During events a chest can follow the battle result (or show when the
+    game opens): tap it until the reward shows, then press Continue. If no
+    reward shows, Skip. Returns how many were opened."""
+    if not game.has(T.CONTINUE) or not any(game.has(n) for n in (T.EVENT_CHEST, T.CHEST_SKIP, T.CHEST_TAP)):
         return 0
     opened = 0
     for _ in range(limit):
-        room = game.wait_for(T.EVENT_CHEST, timeout=4)
-        if room is None:
+        found = None
+        deadline = game.clock() + 4
+        while found is None:
+            found = chest_room(game, refresh=True)
+            if found is None:
+                if game.clock() >= deadline:
+                    break
+                game.wait(0.5)
+        if found is None:
             break
+        room, is_window = found
         log.info("Opening an event chest")
-        x, y = room.x, round(room.y + CHEST_BELOW_WINDOW * room.h)
+        if is_window:
+            x, y = room.x, round(room.y + CHEST_BELOW_WINDOW * room.h)
+        else:
+            x, y = round(game.size[0] * CHEST_MIDDLE[0]), round(game.size[1] * CHEST_MIDDLE[1])
         for _ in range(CHEST_MAX_TAPS):
             game.tap(x, y, jitter=5)
             if game.wait_for(T.CONTINUE, timeout=1.5):
                 break
+        if not game.find(T.CONTINUE):
+            skip = chest_room(game, refresh=True)
+            if skip is not None and skip[0].name.startswith(T.CHEST_SKIP):
+                log.info("The chest didn't open with taps: pressing Skip")
+                game.tap(skip[0].x, skip[0].y)
+                game.wait(1.5)
         if not game.click_when_visible(T.CONTINUE, timeout=10):
             log.info("No Continue button after the chest")
         # A chest can hold several rewards, each with its own Continue.
@@ -212,7 +266,7 @@ def clear_popups(game: Game, rounds: int = 5) -> int:
         if close_rate_dialog(game):
             pressed += 1
             continue
-        if game.has(T.EVENT_CHEST) and game.find(T.EVENT_CHEST):
+        if in_chest_room(game):
             pressed += open_event_chests(game)
             continue
         hit = next((b for b in POPUP_BUTTONS if game.has(b) and game.click(b)), None)
@@ -248,15 +302,23 @@ COLLECTOR_THRESHOLD = 0.8  # the bubbles sit over busy village art
 
 
 def collect_resources(game: Game, kinds: tuple[str, ...] = ("gold", "elixir", "dark")) -> list[str]:
-    """Empty full collectors: one tap on a bubble collects every collector
-    of that kind, so each kind in ``kinds`` with a bubble showing is tapped
-    once. Returns the kinds collected."""
+    """Empty full collectors (and the ice cube): one tap on a bubble
+    collects every collector of that kind, so each kind in ``kinds`` with a
+    bubble showing is tapped once. Bubbles are found by their pale frame
+    and the loot's colour in it (farmbot/bubbles.py, the same for every
+    player); a kind's picture, if taught, is the fallback. Returns the
+    kinds collected."""
     collected = []
     for kind in kinds:
-        name = COLLECTOR_PICTURES[kind]
-        if not game.has(name):
+        seen = [b for b in bubbles.find(game.refresh()) if b.kind == kind]
+        if seen:
+            game.tap(seen[0].x, seen[0].y)
+            game.wait(0.8)
+            collected.append(kind)
             continue
-        game.refresh()
+        name = COLLECTOR_PICTURES.get(kind)
+        if name is None or not game.has(name):
+            continue
         bubble = game.find(name, threshold=COLLECTOR_THRESHOLD)
         if bubble is None:
             continue
@@ -769,3 +831,116 @@ def collect_loot_cart(game: Game) -> bool:
     game.wait(1.5)
     log.info("Collected the loot cart")
     return True
+
+
+# Where the Clan Castle's ground is, from its badge's centre, in badge
+# heights: the badge floats over the castle, and a tap on it (or too low)
+# picks a trap or hero by it. Tried in turn until Treasury shows.
+CASTLE_LOOKS = 3
+CASTLE_TAPS = ((0.2, 0.8), (1.0, 0.6), (0.2, 1.1), (-0.6, 0.8))  # (on a 20 px badge: 16 px below it)
+# The castle's own label, the same in every clan: "Full!" (troops in it) or
+# "Request". "Full!" also shows over full storages, so each is only a spot to
+# try: Treasury showing under the selected building is the proof. The
+# castle's middle is 3 label heights below the label (measured: TH16).
+LABEL_TAPS = ((0, 3.0), (0.5, 3.4))
+LABEL_LIKENESS = 0.55  # on the label's white letters (the sky or base behind them varies)
+MAX_SPOTS = 8  # labels tried at most (each storage that's full shows "Full!" too)
+
+
+def _white_letters(image: np.ndarray) -> np.ndarray:
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    return ((hsv[:, :, 2] > 190) & (hsv[:, :, 1] < 70)).astype(np.float32)
+
+
+def castle_labels(screen: np.ndarray, library) -> list[tuple[float, float, int]]:
+    """Each "Full!" or "Request" label on ``screen`` (``buttons/castle_label``
+    pictures), as (x, y, height) of its middle: "Request" first (only the
+    castle shows it; "Full!" shows over full storages too), then best match
+    first."""
+    if not library.has(T.CASTLE_LABEL):
+        return []
+    letters = _white_letters(screen)
+    found: list[tuple[int, float, float, float, int]] = []
+    for name, picture in library.get(T.CASTLE_LABEL):
+        h, w = picture.shape[:2]
+        pattern = _white_letters(picture)
+        if pattern.max() == 0 or letters.shape[0] < h or letters.shape[1] < w:
+            continue
+        rank = 0 if name.rsplit("/", 1)[-1].startswith("request") else 1
+        scores = cv2.matchTemplate(letters, pattern, cv2.TM_CCOEFF_NORMED)
+        ys, xs = np.where(scores >= LABEL_LIKENESS)
+        for x, y in zip(xs, ys):
+            found.append((rank, -float(scores[y, x]), x + w / 2, y + h / 2, h))
+    spots: list[tuple[float, float, int]] = []
+    for _, _, x, y, h in sorted(found):
+        if all(abs(x - sx) > 2 * h or abs(y - sy) > h for sx, sy, _ in spots):
+            spots.append((x, y, h))
+    return spots
+
+
+def _castle_spots(game: Game) -> list[tuple[float, float, float, tuple]]:
+    """Where to look for the Clan Castle: its label's spots, then its badge
+    (the user's picture), as (x, y, unit, taps): taps in units from (x, y)."""
+    library = game.vision.library
+    for look in range(CASTLE_LOOKS):  # a troop or hero walking past can cover it a moment
+        if look:
+            game.wait(1)
+        screen = game.refresh()
+        spots = [(x, y, h, LABEL_TAPS) for x, y, h in castle_labels(screen, library)[:MAX_SPOTS]]
+        if library.has(T.CASTLE_BADGE):
+            spots += [(b.x + b.w / 2, b.y + b.h / 2, b.h, CASTLE_TAPS)
+                      for _, b in redact.matches(screen, library, T.CASTLE_BADGE)[:1]]
+        if spots:
+            return spots
+    return []
+
+
+def collect_treasury(game: Game) -> bool:
+    """Empty the Clan Castle's treasury (Clan War and Star Bonus loot):
+    find the castle by its "Full!"/"Request" label (or the user's picture
+    of its badge), tap it (another spot if something by it is picked), then
+    Treasury and Collect. The window is closed and nothing left selected,
+    however it ends. True if Collect was tapped."""
+    spots = _castle_spots(game)
+    if not spots:
+        log.info("Treasury: the Clan Castle wasn't found (no \"Full!\" or \"Request\" over it, no badge picture match)")
+        return False
+    try:
+        opened = False
+        for x, y, unit, taps in spots:
+            for dx, dy in taps:
+                game.tap(round(x + dx * unit), round(y + dy * unit))
+                if game.click_when_visible(T.TREASURY, timeout=2):
+                    opened = True
+                    break
+            if opened:
+                break
+        if not opened:
+            log.info("Treasury: taps by the Clan Castle picked something else each time")
+            return False
+        if not game.wait_for(T.TREASURY_TITLE, timeout=4):
+            log.info("Treasury: its window didn't open")
+            return False
+        game.refresh()
+        if not game.click(T.TREASURY_COLLECT):
+            log.info("Treasury: no Collect button (nothing in it?)")
+            return False
+        # "Collect Resources? Are you sure you want to transfer all
+        # resources from the Treasury to your storages?" Cancel / Okay.
+        if not game.wait_for(T.TREASURY_CONFIRM, timeout=3):
+            log.info("Treasury: Collect was tapped but its \"Collect Resources?\" question didn't show; not collected")
+            return False
+        game.refresh()
+        if not game.click(T.TREASURY_OKAY):
+            log.info("Treasury: no Okay under \"Collect Resources?\"; not collected")
+            return False
+        game.wait(1.5)
+        game.refresh()
+        if game.find(T.TREASURY_CONFIRM):
+            log.info("Treasury: Okay was tapped but the question stayed; not collected")
+            return False
+        log.info("Collected the Clan Castle treasury")
+        return True
+    finally:
+        close_all_windows(game)
+        deselect(game)

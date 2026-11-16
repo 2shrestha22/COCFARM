@@ -62,7 +62,7 @@ looks after your village, in **both the home village and the builder base**.
 
 **Updating:** COCFARM tells you when a new version is out. Press **Update now**, then
 **Restart and update** once it's downloaded. Your settings, history and pictures are kept.
-You can also check by hand under **Advanced → Settings → Updates**.
+You can also check by hand under **Advanced → App → Updates**.
 
 ### Tested emulators
 

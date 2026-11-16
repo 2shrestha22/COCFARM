@@ -144,6 +144,12 @@ def _pictures(library, name: str) -> list[np.ndarray]:
         return []
 
 
+def matches(screen: np.ndarray, library, name: str, threshold: float = CASTLE_LIKENESS) -> list[tuple[float, Rect]]:
+    """Where the user's pictures ``name`` show on ``screen`` (at any of
+    :data:`SIZES`), best first: (score, box)."""
+    return _best(screen, _pictures(library, name), threshold)
+
+
 def castles(screen: np.ndarray, library) -> list[Rect]:
     """The Clan Castles on ``screen`` found by the user's pictures of them,
     each box taking in the clan's badge and name over it."""
@@ -172,6 +178,14 @@ def chat_edge(screen: np.ndarray, library) -> int | None:
 def read_lines(image: np.ndarray, zoom: float) -> list[Rect] | None:
     """Where Windows' OCR reads a line of text on ``image`` (made ``zoom``
     times bigger first: it reads small text better), or None if it can't."""
+    lines = read_text(image, zoom)
+    return None if lines is None else [r for r, _ in lines]
+
+
+def read_text(image: np.ndarray, zoom: float) -> list[tuple[Rect, str]] | None:
+    """The lines of text Windows' OCR reads on ``image`` (made ``zoom``
+    times bigger first), each with where it is in ``image``; None if it
+    can't read (no OCR, or it failed)."""
     import subprocess
     import tempfile
 
@@ -192,12 +206,12 @@ def read_lines(image: np.ndarray, zoom: float) -> list[Rect] | None:
         return None
     lines = []
     for line in out.stdout.decode("utf-8", "replace").splitlines():
-        parts = line.split("\t")
+        parts = line.split("	")
         try:
             x, y, w, h = (round(int(v) / zoom) for v in parts[:4])
         except ValueError:
             continue
-        lines.append(Rect(x, y, w, h))
+        lines.append((Rect(x, y, w, h), "	".join(parts[4:]).strip()))
     return lines
 
 

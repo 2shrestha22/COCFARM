@@ -89,7 +89,9 @@ SEARCH_STEPS = {"gold": 50_000, "elixir": 50_000, "dark": 1_000}  # rounded to t
 SEARCH_BY_TOWN_HALL = {1: 1_000, 2: 5_000, 3: 10_000, 4: 30_000, 5: 60_000, 6: 100_000, 7: 150_000,
                        8: 200_000, 9: 300_000, 10: 400_000, 11: 500_000, 12: 600_000, 13: 750_000,
                        14: 900_000}
-SEARCH_TOP = 900_000  # Town Hall 15 and up
+# Town Hall 15 and up. Bases there offer a median 1.4M gold+elixir; replaying 194
+# scouted (4.2 s a Next) puts the most loot an hour at 1.2M-1.5M each (900k: about 13% less).
+SEARCH_TOP = 1_200_000
 MAX_TOWN_HALL = 18
 # The amounts before 1.5.3: minimums still at one of these were never typed
 # in, so they move to the new ones.
@@ -188,6 +190,11 @@ class SearchConfig:
 class AttackConfig:
     sides: list[str] = field(default_factory=lambda: ["nw", "ne", "sw", "se"])
     waves: int = 1  # split each troop type over 1-3 waves
+    # Where troops go when farming: "spread" round the sides above, or
+    # "loot": in from the edge nearest where most loot is seen on the base
+    # (elixir by its colour, other loot buildings by pictures taught; see
+    # ``farmbot/lootspots.py``).
+    placement: str = "spread"
     troop_speed: int = 7  # 1 (slow) - 9 (fast): pause between single taps
     wave_speed: int = 8  # 1 (slow) - 9 (fast): pause between waves
     # Siege machines let the Clan Castle troops out when destroyed; off leaves them in the bar.
@@ -202,6 +209,10 @@ class AttackConfig:
     ability_health: float = 0.0
     ability_max_wait: float = 45.0
     speed_up: bool = True  # press the 1x button (last minute of a battle) so it plays at 4x
+    # Earn the day's Star Bonus: while the strip above Battle still has stars to
+    # light, home battles are fought for stars (never left early over loot; see
+    # star_focus), then farming goes on as usual once all five are earned.
+    star_bonus: bool = True
     # End the battle once the available loot has not dropped for this long.
     end_when_no_loot: bool = True
     no_loot_seconds: float = 15.0
@@ -408,6 +419,16 @@ class CapitalConfig:
     # A heal goes on the units once their health bars fall under this share.
     miner_heal_at: float = 0.7  # Super Miners: kept going together
     fortress_heal_at: float = 0.5  # Flying Fortresses
+    # Which open district first: "destroyed" (the most destroyed, by the map's %) or "stars" (the most stars).
+    district_order: str = "destroyed"
+    # Flying Fortresses: a heal still unused 45 s in goes on the first fortress under 85%.
+    late_heal: bool = True
+    # Flying Fortresses: s ahead of where they're heading that the heal lands (0: on them).
+    heal_lead: float = 1.0
+    # Skeleton spell on the buildings near the troops' drop (off: the most packed anywhere in view).
+    spells_near_drop: bool = True
+    # Lightning on the buildings near the troops' drop when there are any (off: the most packed anywhere).
+    lightning_near_drop: bool = False
 
 
 @dataclass
@@ -477,6 +498,7 @@ class NotifyConfig:
     on_stopped: bool = True  # the bot stopped: by an error, or after a run
     on_emulator_restart: bool = True
     daily_summary: bool = True  # yesterday's attacks and loot, sent after midnight
+    on_raids: bool = True  # Clan Capital raids made: each district's % before and after
     progress_every: int = 0  # a progress update (attacks, loot, ...) every N attacks; 0: none
     on_critical_error: bool = False  # a round failed and the game is restarted, or an error stops the bot
     on_deploy_failed: bool = False  # a battle where no troop or hero would go down, after every retry
@@ -499,9 +521,14 @@ class BotConfig:
     collect_gold: bool = True
     collect_elixir: bool = True
     collect_dark: bool = True
+    collect_ice: bool = True  # the ice cube's bubble (it shows in the same pale bubble)
     collect_every: int = 7  # ...every N rounds (1 = each round); the first round after Start always collects
     collect_loot_cart: bool = True  # loot left over from defences, shown as a cart
     clear_gravestones: bool = True  # left by attackers' troops; tapping one clears them all
+    # The Clan Castle's treasury (Clan War and Star Bonus loot): off by
+    # default, since loot moved from it to the storages can be raided. Needs
+    # a picture of your own castle's badge (Advanced → Pictures).
+    collect_treasury: bool = False
     # Once a day, the game's village export (Settings → More Settings → Data
     # Export): the Town Hall's level and every building's, so what this
     # account can't do yet is left out (farmbot/townhall.py).
@@ -532,13 +559,20 @@ class WallsConfig:
 
 @dataclass
 class UpgradeConfig:
-    """Upgrading buildings, heroes, research and pets once a storage is full
-    (see ``farmbot/tasks/upgrade.py``)."""
+    """Upgrading buildings, heroes, research and pets once a storage is full,
+    or holds the amount set for it (see ``farmbot/tasks/upgrade.py``)."""
 
     enabled: bool = False
+    # Start on a resource once it reaches this much, not only once its
+    # storages are full (0: once they're full).
+    start_gold: int = 0
+    start_elixir: int = 0
+    start_dark: int = 0
     # What gets upgraded, first to last: each takes what it can of the full
     # storages before the next. Pets: dark elixir; heroes and research: elixir
-    # or dark elixir; buildings: gold, elixir or dark elixir.
+    # or dark elixir; buildings: gold, elixir or dark elixir; walls (when
+    # walls.enabled): gold or elixir above what they keep. An older file
+    # without "walls" gets them last, as walls always were.
     order: list[str] = field(default_factory=lambda: list(UPGRADE_ORDER))
     pets: bool = True
     heroes: bool = True
@@ -546,6 +580,12 @@ class UpgradeConfig:
     buildings: bool = True
     # The kind of building that gets builders first ("none": dearest of any kind).
     first: str = "none"
+    # Upgrade only these buildings (their names, as in
+    # ``farmbot/tasks/row_names.py``); empty: any. The Town Hall, walls and
+    # heroes have their own settings.
+    only: list[str] = field(default_factory=list)
+    # Research only this (troops, spells, siege machines; first to last); empty: any.
+    research_only: list[str] = field(default_factory=list)
     # Buildings not built yet ("New" in the list) are built first, and new
     # walls (free) put down; the Town Hall is upgraded like any building
     # (when it can't be yet, the next upgrade instead).
@@ -554,6 +594,16 @@ class UpgradeConfig:
     # While the Town Hall is being upgraded, once gold and elixir are full
     # and nothing is left to spend them on: the game is closed until it's done.
     wait_for_town_hall: bool = True
+    # Once every builder (and the laboratory) the upgrades may use is busy,
+    # COCFARM closes, and a Windows scheduled task opens it again when the
+    # first is done (farming for the next upgrade's loot, then closing again):
+    # ``farmbot/wakeup.py``. Each round tries the upgrades with the loot held.
+    wake_up: bool = False
+    # An idle Builder's Apprentice is put on the upgrade under way with the most time left (each round's
+    # upgrades, after them; kept on it until it's done).
+    apprentice: bool = True
+    # The same for an idle Lab Assistant, on the research under way with the most time left.
+    lab_assistant: bool = True
     # How many of the village's builders upgrades may keep busy (walls aside),
     # once the village data says how many there are. 0: all but one; -1: none.
     builders: int = 0
@@ -561,17 +611,20 @@ class UpgradeConfig:
 
 WALL_RESOURCES = ("gold", "elixir", "both")
 UPGRADE_FIRST = ("defense", "resource", "army", "none")
-UPGRADE_ORDER = ("pets", "hero", "research", "building")
-BUILDER_UPGRADE_ORDER = ("research", "hero", "building")
+# "walls": where the walls take their turn (they have their own settings: walls.*, builder.walls*).
+UPGRADE_ORDER = ("pets", "hero", "research", "building", "walls")
+BUILDER_UPGRADE_ORDER = ("research", "hero", "building", "walls")
 MODES = ("home", "builder", "auto")  # auto: one village until its storages are full, then the other
 THEMES = ("auto", "light", "dark")
 BUILDER_CORNERS = ("auto", "left", "top", "right")
 BUILDER_HEROES = ("any", "machine", "copter")
 SPELL_PLACEMENTS = ("together", "spread")
+TROOP_PLACEMENTS = ("spread", "loot")
 SPELL_CHOICES = ("bat", "all")
 SPELL_SPOTS = ("middle", "random")
 STAR_FOCUS = ("side", "corner", "spread")
 WAR_TARGETS = ("mirror", "bottom", "gain")
+DISTRICT_ORDERS = ("destroyed", "stars")
 
 
 @dataclass
@@ -597,9 +650,13 @@ class BuilderConfig:
     stage_delay: float = 2.0  # wait for the second base to settle before deploying
     speed_up: bool = True  # press the 1x button so the battle plays at 4x
     collect_resources: bool = True  # empty the builder base gold mines, elixir collectors and gem mine
-    # ...every N battles (1 = before each one): looking means a trip over to
-    # the second base and back, and the collectors fill slowly.
+    # (no longer used: collecting goes by time, collect_minutes; kept so older
+    # settings files still load)
     collect_every: int = 7
+    # ...once this many minutes have passed since the last time (0 = before
+    # each battle): looking means a trip over to the second base and back, and
+    # the collectors fill slowly, by the hour, however many battles go by.
+    collect_minutes: int = 30
     # Empty the elixir cart (defense rewards) every N battles, N picked at
     # random between these two each time.
     collect_cart: bool = True
@@ -745,6 +802,8 @@ class Config:
             raise ValueError("builder.cart_every_min can't be more than builder.cart_every_max")
         if self.builder.walls_use not in WALL_RESOURCES:
             raise ValueError(f"builder.walls_use must be one of {WALL_RESOURCES}")
+        if self.attack.placement not in TROOP_PLACEMENTS:
+            raise ValueError(f"attack.placement must be one of {TROOP_PLACEMENTS}")
         if self.attack.spell_placement not in SPELL_PLACEMENTS:
             raise ValueError(f"attack.spell_placement must be one of {SPELL_PLACEMENTS}")
         if self.attack.spells not in SPELL_CHOICES:
@@ -755,6 +814,8 @@ class Config:
             raise ValueError(f"attack.star_focus must be one of {STAR_FOCUS}")
         if self.war.target not in WAR_TARGETS:
             raise ValueError(f"war.target must be one of {WAR_TARGETS}")
+        if self.capital.district_order not in DISTRICT_ORDERS:
+            raise ValueError(f"capital.district_order must be one of {DISTRICT_ORDERS}")
         if self.builder.first_hero not in BUILDER_HEROES:
             raise ValueError(f"builder.first_hero must be one of {BUILDER_HEROES}")
         if self.builder.corner not in BUILDER_CORNERS:

@@ -11,6 +11,7 @@ from __future__ import annotations
 import enum
 import logging
 
+from farmbot import wordbuttons
 from farmbot.game import Game, T
 
 log = logging.getLogger(__name__)
@@ -35,7 +36,7 @@ VILLAGES = (Screen.HOME, Screen.BUILDER)
 
 # Buttons that only show on a window over the village (tried in this order
 # when clearing them). Continue sits under a chest's reward.
-POPUP_BUTTONS = (T.TRY_AGAIN, T.RELOAD, T.BB_OKAY, T.CONTINUE, T.OKAY, T.CLOSE, T.REMOVE_ADS)
+POPUP_BUTTONS = (T.TRY_AGAIN, T.RELOAD, T.BB_OKAY, T.CONTINUE, T.STAR_BONUS_CLAIM, T.OKAY, T.CLOSE, T.REMOVE_ADS)
 
 
 # The Clan Capital's ways home: its Return Home, the raid map's airship Map,
@@ -43,8 +44,8 @@ POPUP_BUTTONS = (T.TRY_AGAIN, T.RELOAD, T.BB_OKAY, T.CONTINUE, T.OKAY, T.CLOSE, 
 CAPITAL_EXITS = (T.CAPITAL_RETURN_HOME, T.CAPITAL_LEAVE_RAID, T.CAPITAL_RESULT_MAP)
 
 # What covers a village, looked for first: anything over the village wins.
-COVERS = (T.MAINTENANCE, T.RATE_TITLE, T.PICK_REWARD, T.EVENT_CHEST, T.RETURN_HOME, T.BB_RETURN_HOME,
-          T.END_BATTLE, T.BB_BATTLE_STARTS, T.BB_BATTLE_ENDS)
+COVERS = (T.MAINTENANCE, T.RATE_TITLE, T.PICK_REWARD, T.EVENT_CHEST, T.CHEST_SKIP, T.CHEST_TAP, T.RETURN_HOME,
+          T.BB_RETURN_HOME, T.END_BATTLE, T.BB_BATTLE_STARTS, T.BB_BATTLE_ENDS)
 
 
 def _seen(game: Game, name: str) -> bool:
@@ -64,7 +65,7 @@ def identify(game: Game, refresh: bool = True) -> Screen:
 
 
 def _identify(game: Game, refresh: bool) -> Screen:
-    from farmbot.tasks import builder  # tasks import this module's callers
+    from farmbot.tasks import builder, village  # tasks import this module's callers
 
     if refresh:
         game.refresh()
@@ -76,7 +77,7 @@ def _identify(game: Game, refresh: bool) -> Screen:
         return Screen.POPUP
     if _seen(game, T.PICK_REWARD):
         return Screen.REWARD
-    if _seen(game, T.EVENT_CHEST):
+    if village.in_chest_room(game):  # (its window picture, or its Skip: the same in every room)
         return Screen.CHEST
     if _seen(game, T.RETURN_HOME) or _seen(game, T.BB_RETURN_HOME):
         return Screen.RESULTS
@@ -121,6 +122,7 @@ class MaintenanceBreak(RuntimeError):
 
 SETTLE_STEPS = 10
 UNKNOWN_WAIT = 3.0  # seconds: loading screens and animations pass by themselves
+UNKNOWN_BEFORE_WORDS = 2  # unknown looks in a row before its words are read (see wordbuttons)
 
 
 def settle(game: Game, steps: int | None = None) -> Screen:
@@ -170,6 +172,10 @@ def settle(game: Game, steps: int | None = None) -> Screen:
             log.info("Closing the battle menu")
             game.device.back()
             game.screen = None
+            game.wait(1.5)
+        elif seen[-UNKNOWN_BEFORE_WORDS:] == [Screen.UNKNOWN] * UNKNOWN_BEFORE_WORDS and wordbuttons.tap_safe_word(game):
+            # Still unknown after a wait (not a loading screen): something new from an update,
+            # got past by its button's words ("Skip", "Continue", "Close", ...).
             game.wait(1.5)
         else:
             game.wait(UNKNOWN_WAIT)

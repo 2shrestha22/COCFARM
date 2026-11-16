@@ -1,10 +1,12 @@
 """Enemy buildings on a battle's base, from pictures the user taught.
 
-Buildings change with every level and skin, so none ship with the bot: each
-is a folder of pictures (``buildings/air_defense/<level>.png``), cut in the
-Pictures tool from a base kept in ``screens/bases`` (every war and ranked
-battle keeps its base there). With no picture of a building, it's simply
-never found, and the attack plays as it would without it.
+Buildings change with every level and skin: each is a folder of pictures
+(``buildings/air_defense/<level>.png``), cut in the Pictures tool from a
+base kept in ``screens/bases`` (every war and ranked battle keeps its base
+there). The Air Defense's ship with the bot (10, each finding some the
+others miss on 267 kept bases); a user adds more, or others, the same way.
+With no picture of a building, it's simply never found, and the attack
+plays as it would without it.
 """
 
 from __future__ import annotations
@@ -18,6 +20,10 @@ from farmbot.geometry import Point
 log = logging.getLogger(__name__)
 
 LIKENESS = 0.8  # a building's picture against the base: lower, and other buildings pass for it
+# An Air Defense's launcher turns, so no picture fits it closely: 10 pictures
+# at different turns, at 0.65, find more of them than 40 did at 0.7, with no
+# other building passing (250 kept bases); at 0.6 wall corners pass.
+AIR_DEFENSE_LIKENESS = 0.65
 APART = 0.6  # matches nearer than this share of the picture's size are the same building
 
 

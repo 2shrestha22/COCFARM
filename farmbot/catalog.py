@@ -40,6 +40,9 @@ SUPER_TROOPS = "Activating super troops"
 CAPITAL = "Clan Capital raids"
 STAR_PLANS = "War and ranked attacks planned by army and base"
 WAR = "Clan war attacks"
+APPRENTICE = "Putting the Builder's Apprentice to work"
+LAB_ASSISTANT = "Putting the Lab Assistant to work"
+TREASURY = "Collecting the Clan Castle treasury"
 
 PICTURES: list[Picture] = [
     # Attacking: without these the bot cannot get into or out of a battle.
@@ -53,19 +56,27 @@ PICTURES: list[Picture] = [
             "card: just his mouth and beard (not his level, the equipment icon in the corner or the green "
             "button).", WARDEN_SIDE),
     Picture(T.AIR_CARDS, "Air troop cards", "Troop bar during a battle: the picture of an air troop's card "
-            "(Dragon, Electro Dragon, Balloon...), not its count or level; one picture per troop. With an air "
-            "army, war and ranked attacks go in facing the most Air Defenses.", STAR_PLANS, folder=True),
+            "(Dragon, Electro Dragon, Balloon...): its lower half, below the \"xN\" count (the count changes) "
+            "and above the level; one picture per troop. With an air army, war and ranked attacks go in "
+            "facing the most Air Defenses.", STAR_PLANS, folder=True),
     Picture(T.GROUND_CARDS, "Ground troop cards", "Troop bar during a battle: the picture of a ground troop's "
-            "card, not its count or level; one picture per troop. With a ground army, the heroes and siege go "
-            "in first in war and ranked attacks, to open the way.", STAR_PLANS, folder=True),
+            "card: its lower half, below the \"xN\" count and above the level; one picture per troop. "
+            "With a ground army, the heroes and siege go in first in war and ranked attacks, to open the "
+            "way.", STAR_PLANS, folder=True),
     Picture(T.LURE_CARDS, "Lure troop card", "Troop bar during a battle: the picture of a cheap troop's card "
             "(a Barbarian, say). In war and ranked attacks one goes in first, by the Clan Castle, to pull out "
             "its troops.", STAR_PLANS, folder=True),
     Picture(T.AIR_DEFENSE, "Air Defense", "An enemy base in a war or ranked battle, zoomed out (kept in "
-            "screens/bases): one Air Defense, just the building; one picture per level.", STAR_PLANS, folder=True),
+            "screens/bases): one Air Defense, just the building; its launcher turns, so a few pictures per "
+            "level, at different turns.", STAR_PLANS, folder=True),
     Picture(T.CLAN_CASTLE, "Clan Castle", "An enemy base in a war or ranked battle, zoomed out (kept in "
             "screens/bases): the Clan Castle, just the building; one picture per level. Also blocks it out in "
             "bug report screenshots.", STAR_PLANS, folder=True),
+    Picture(T.LOOT_BUILDINGS, "Loot buildings", "An enemy base before a battle, zoomed out (kept in "
+            "screens/loot_bases when troops go toward the loot): one storage, mine, collector or drill, just "
+            "the building; one picture per kind and level you meet. Optional: elixir is found by its colour "
+            "without them; gold and dark elixir buildings only by these.", "Attacking",
+            folder=True),
     Picture(T.END_BATTLE, "End Battle", "During a battle, bottom left: the words \"End Battle\" "
             "(\"Surrender\" once units are out).", "Attacking", True, folder=True),
     # Recommended: without these two the bot closes the game to leave a battle.
@@ -75,6 +86,10 @@ PICTURES: list[Picture] = [
             "(or \"Claim Reward\" when a star bonus is due).", QUICK_EXIT, folder=True),
     Picture(T.EVENT_CHEST, "Event chest room", "After some battles during events: the top half of the arched window "
             "above the chest.", "Opening event chests"),
+    Picture(T.CHEST_TAP, "Chest room Tap!", "A chest room without Skip (the Star Bonus chest): the word \"Tap!\" "
+            "over the chest.", "Opening event chests"),
+    Picture(T.CHEST_SKIP, "Chest room Skip", "Any chest room (its scenery changes with events): the word \"Skip\" "
+            "at the bottom right.", "Opening event chests"),
     Picture(T.REMOVE_ADS, "Remove Ads", "An ad shown in the game (\"Welcome Back Chief!\" with another game's "
             "picture): the \"Remove Ads\" badge at its top right, without the X beside it.",
             "Closing ads with their X instead of Okay, which opens the ad"),
@@ -92,6 +107,22 @@ PICTURES: list[Picture] = [
             "Collecting the loot cart"),
     Picture(T.LOOT_CART_COLLECT, "Loot cart Collect", "After tapping the loot cart: the word \"Collect\" on "
             "the button under it.", "Collecting the loot cart", folder=True),
+    Picture(T.CASTLE_LABEL, "Clan Castle label", "Home village, nothing selected: the white word \"Full!\" or "
+            "\"Request\" over your Clan Castle, tight around the word. The castle is found by it, in any clan.",
+            TREASURY, folder=True),
+    Picture(T.CASTLE_BADGE, "Your Clan Castle's badge", "Optional (for when the castle shows neither \"Full!\" "
+            "nor \"Request\"). Home village, zoomed out, nothing selected: your clan's badge over your Clan "
+            "Castle, tight around the badge (not the clan name). One per account if their clans differ; kept "
+            "on this PC only.", TREASURY, folder=True),
+    Picture(T.TREASURY, "Treasury button", "Tap your Clan Castle: the keyhole chest and the word \"Treasury\" on "
+            "the button under it.", TREASURY),
+    Picture(T.TREASURY_TITLE, "Treasury title", "The window Treasury opens: its title \"Treasury\".", TREASURY),
+    Picture(T.TREASURY_COLLECT, "Treasury Collect", "The same window: the word \"Collect\" on its green button.",
+            TREASURY),
+    Picture(T.TREASURY_CONFIRM, "Collect Resources?", "After Treasury's Collect: the words \"Resources?\" in the "
+            "question's title.", TREASURY),
+    Picture(T.TREASURY_OKAY, "Okay (Collect Resources?)", "The same question: the word \"Okay\" on its green "
+            "button.", TREASURY),
     Picture(T.GRAVESTONE, "Gravestone", "Home village, zoomed out, after someone attacked you: one grey "
             "gravestone, tight around the stone.", "Clearing gravestones"),
     Picture(T.SUPER_ACTIVATE, "Activate (super troop)", "Army screen after Find a Match, with a super troop that "
@@ -112,6 +143,12 @@ PICTURES: list[Picture] = [
             "Closing notices"),
     Picture(T.STORAGE_MAX, "Max:", "Tap your gold at the top right: the word \"Max:\" in the box that opens.",
             "Storage size"),
+    Picture(T.STAR_BONUS_CLAIM, "Claim (Star Bonus)", "The \"Star Bonus received!\" window after the day's "
+            "fifth star: the word \"Claim\" on its green button.", "Earning the Star Bonus"),
+    Picture(T.STAR_BONUS_DONE, "Star Bonus received", "The home village once the day's Star Bonus is received: "
+            "the green check on the Battle button.", "Earning the Star Bonus"),
+    Picture(T.STAR_BONUS, "Star Bonus star", "The home village: one star of the five in the strip above the "
+            "Battle button (any of them, earned or not).", "Earning the Star Bonus"),
     Picture(T.LAYOUT_OBSTRUCTED, "Defensive Layout obstructed", "The window that sometimes shows after asking "
             "for a battle: its title \"Defensive Layout obstructed\".", "Attacking with an obstructed layout"),
     Picture(T.OBSTRUCTED_ATTACK, "Attack (obstructed layout)", "The same window: the word \"Attack\" on its "
@@ -182,6 +219,21 @@ PICTURES: list[Picture] = [
     Picture(T.UPGRADE, "Upgrade", "A selected wall: the word \"Upgrade\" under the hammer.", "Upgrading walls"),
     Picture(T.UPGRADE_CONFIRM, "Confirm (upgrade)", "Upgrade window: the word \"Confirm\" on the green button.",
             "Upgrading walls"),
+    Picture(T.HELPER_AVAILABLE, "Available (helper)", "Build list open: the word \"Available\" in a helper's "
+            "bubble beside the list.", APPRENTICE),
+    Picture(T.APPRENTICE_FACE, "Builder's Apprentice", "Build list open: the Builder's Apprentice's face in his "
+            "bubble beside the list.", APPRENTICE),
+    Picture(T.APPRENTICE_TITLE, "Builder's Apprentice title", "His window: the words \"Builder's Apprentice\" "
+            "(not the level).", APPRENTICE),
+    Picture(T.LAB_ASSISTANT_FACE, "Lab Assistant", "Build list's Army Upgrades open: the Lab Assistant's face in "
+            "his bubble beside the list.", LAB_ASSISTANT),
+    Picture(T.LAB_ASSISTANT_TITLE, "Lab Assistant title", "His window: the words \"Lab Assistant\" (not the level).",
+            LAB_ASSISTANT),
+    Picture(T.HELPER_ASSIGN, "Assign", "A helper's window: the word \"Assign\" on a row's green button.", APPRENTICE),
+    Picture(T.HELPER_KEEP, "Keep assigned (unticked)", "After Assign: the empty box left of \"Keep assigned "
+            "until upgrade is complete\".", APPRENTICE),
+    Picture(T.HELPER_CONFIRM, "Confirm (helper)", "After Assign: the word \"Confirm\" (not the face beside it).",
+            APPRENTICE),
     Picture(T.UPGRADE_MORE, "Upgrade More", "A selected wall: the words \"Upgrade More\" (both lines).",
             "Upgrading walls"),
     Picture(T.ADD_WALL, "Add Wall", "After Upgrade More: the words \"Add Wall\" under a button (the same on "
@@ -231,7 +283,8 @@ PICTURES: list[Picture] = [
     Picture(T.CAPITAL_COLLAPSE, "Fold event buttons", "Home village, bottom: the \"<\" at the end of the event "
             "buttons.", CAPITAL),
     Picture(T.CAPITAL_AIRSHIP, "Capital airship", "Home village, bottom left (event buttons folded): the airship's "
-            "three orange balloons, without the badge.", CAPITAL),
+            "balloons, without the badge. Only needed when no raid badge shows (the badge finds the airship "
+            "otherwise); the airship's look changes, so add a picture of each look.", CAPITAL, folder=True),
     Picture(T.CAPITAL_START_RAID, "Start Raid", "Clan Capital before the clan's raid began, bottom right: the "
             "crossed swords and \"Start Raid\".", CAPITAL),
     Picture(T.CAPITAL_NEXT_RAID, "Next Raid", "Clan Capital, after a raid's summary: the words \"Next Raid\".",
@@ -249,7 +302,8 @@ PICTURES: list[Picture] = [
             "began can attack\": its words.", CAPITAL),
     Picture(T.CAPITAL_CARD_DIR, "Capital unit", "Change Capital Army list: the unit's picture, in colour (it tells the "
             "cards in the raid's troop bar apart). Save it under the unit's name, e.g. super_miner.", CAPITAL, folder=True),
-    Picture(T.CAPITAL_BATTLE_HEAL, "Raid Heal card", "Troop bar during a raid: the Heal Spell card's bottle.",
+    Picture(T.CAPITAL_BATTLE_HEAL, "Raid Heal card", "Troop bar during a raid: the Heal Spell card's bottle, below its count "
+            "(the count changes).",
             CAPITAL),
     Picture(T.CAPITAL_RESULT_MAP, "Raid result: Map", "Raid result screen: the word \"Map\".", CAPITAL),
     Picture(T.WAR_BUTTON, "War button", "Home village, left edge, during a war: the middle of the crossed swords "

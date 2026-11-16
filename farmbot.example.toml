@@ -49,6 +49,7 @@ wave_speed = 8
 hero_abilities = true
 hero_ability_delay = 10.0
 speed_up = true  # press the 1x button in the last minute so the battle plays at 4x
+star_bonus = true  # fight for stars until the day's Star Bonus (5 stars) is earned, then farm as usual
 end_when_no_loot = true
 no_loot_seconds = 15.0
 end_when_full = true  # leave once the loot taken fills the storages (stop_when_full's, or all of them)

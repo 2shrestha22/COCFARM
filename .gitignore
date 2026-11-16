@@ -40,5 +40,8 @@ farmbot/recorder.py
 
 # Your own Clan Castle, marked in the Bug report tab (personal: never shared)
 templates/redact/
-# Air troop cards taught in the Pictures tab (your own: not shipped)
-templates/cards/air/
+
+# Working notes on the window overhaul (kept locally, never pushed)
+gui-changes.md
+gui-layout.md
+inv.json

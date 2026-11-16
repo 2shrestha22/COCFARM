@@ -10,7 +10,8 @@ from dataclasses import replace
 from datetime import date, datetime, timedelta
 from typing import Callable
 
-from farmbot import accounts, diag, history, human, imagefile, instances, language, screens, townhall
+from farmbot import (accounts, diag, history, human, imagefile, instances, language, screens, starbonus, townhall,
+                     upgradable, wakeup)
 from farmbot.timings import Timings
 from farmbot.notify import Notifier
 from farmbot.config import Config, search_minimums_for, unreachable_minimums, unreachable_note
@@ -35,13 +36,17 @@ RANKED_LOOK = timedelta(hours=1)  # between looks for ranked attacks, once there
 TOWN_HALL_ROUNDS = 3  # rounds in a row with full storages and nothing to upgrade, before resting for the Town Hall
 TOWN_HALL_LOOK = timedelta(hours=2)  # the rest is cut into these: a potion or a book ends the upgrade sooner
 EXTRA_NAMES = {"_collect": "collecting", "_loot_cart": "the loot cart", "_gravestones": "gravestones",
+               "_treasury": "the Clan Castle treasury",
                "_clan_visit": "the clan (donations, requests)", "_capital": "Clan Capital raids",
                "_upgrades": "upgrades", "builder": "the Builder Base", "_browse": "looking around the game",
                "ranked_attacks": "ranked battles", "war_attacks": "clan war attacks"}
 ERROR_SCREENS_KEPT = 200  # newest failed-round screens kept; older ones are deleted
 STORAGE_MAX_TRIES = 3  # readings a day of what a village's storages hold, until one works
+TREASURY_EVERY = timedelta(hours=6)  # between looks at the Clan Castle's treasury (it fills from wars and Star Bonuses)
+TREASURY_FULL_RETRY = timedelta(hours=1)  # with the storages full, or nothing collected: looked at again after this
 STORAGE_RECHECK = 3600.0  # seconds: a storage that looks full is measured again before spending, at most this often
 IDLE_WAIT = 60.0  # seconds between village rounds when not attacking
+WAKE_REREAD = timedelta(minutes=30)  # Close between upgrades: village data this old is read again (at most this often)
 STAR_BONUS_WAIT = 4.0  # seconds, after an attack, for the Star Bonus window to open over the village
 STARTUP_TIMEOUT = 90  # seconds to wait for the home village after starting the game
 # An emulator answers ADB before Android has finished starting up, and a game
@@ -50,6 +55,14 @@ BOOT_SETTLE = 20.0
 START_TRIES = 3  # starts of the game, if it closes while loading
 BLOCKED_WAIT = 180  # seconds the game stays closed after "Unable to attack Village!", at least...
 BLOCKED_WAIT_MAX = 300  # ...and at most (a different wait each time)
+
+
+def raid_report(results: list[tuple[str, int | None, int | None]]) -> str:
+    """One line a raid: "Wizard Valley: 27% → 81% (+54)", "?" where unread."""
+    pct = lambda v: "?" if v is None else f"{v}%"  # noqa: E731
+    return "\n".join(f"{name}: {pct(before)} → {pct(after)}"
+                     + ("" if before is None or after is None else f" (+{after - before})")
+                     for name, before, after in results)
 
 
 class RoundsFailed(RuntimeError):
@@ -84,6 +97,7 @@ class Bot:
         on_account: Callable[[object, object], str | None] | None = None,
         on_village: Callable[[str | None, townhall.Village], None] | None = None,
         village_path: Callable[[str | None], object] | None = None,
+        schedule_wake: Callable[[datetime], bool] | None = None,
     ):
         self.game = game
         game.habits = config.human.active()
@@ -143,10 +157,21 @@ class Bot:
         self._idle_rounds = 0
         self._town_hall_rested = False
         self._town_hall_asked: datetime | None = None  # when the village data was last asked for, for its timer
+        # Upgrades → "Close COCFARM between upgrades": sets Windows to open COCFARM at a time (True: set).
+        self._schedule_wake = schedule_wake
+        self._upgrade_report: tuple[dict, int] | None = None  # this round's upgrades: what they found, started
+        self.left_until: datetime | None = None  # closed until then (Windows opens COCFARM again)
+        self._wake_said: str | None = None  # why it doesn't close, once said
+        self._wake_read_at: datetime | None = None  # when it last read the village data for that
+        # The builder base's last upgrades: what they found, and when (seconds since 1970).
+        self._bb_report: tuple[dict, float] | None = None
+        self._bb_started = False  # the builder base started something the village data doesn't have yet
+        self._bb_sent_home = False  # it sailed home to decide since the builder base last started something
+        self._wake_visit: str | None = None  # the village it goes to next for that ("home", "builder")
         self._extra_fails: Counter = Counter()  # extras' failed rounds in a row, by name
         self._extra_paused: dict[str, datetime] = {}  # extras left alone until then
         self._since_cart = 0  # builder battles since the elixir cart was last emptied
-        self._since_collect: int | None = None  # builder battles since the collectors were emptied
+        self._bb_collected_at: float | None = None  # when the builder collectors were last emptied (game.clock)
         self._since_home_collect: int | None = None  # home village rounds since the collectors were emptied
         self._cart_due: int | None = None  # battles between cart visits, picked at random
         self._clock_off = False  # set if a Clock Tower boost ever cost gems
@@ -159,6 +184,7 @@ class Bot:
         self._since_break = 0  # attacks since the last break
         self._walls_known: dict = {}  # what the wall upgrades learnt (the price), per account
         self._builder_walls_known: dict = {}
+        self._treasury_after: datetime | None = None  # when to look at the Clan Castle's treasury again
         self._capital_after: datetime | None = None  # when to look for Clan Capital raids again
         self._ranked_after: datetime | None = None  # ...and for ranked attacks
         self._war_after: datetime | None = None  # ...and at the clan war
@@ -214,10 +240,11 @@ class Bot:
             self._idle_rounds, self._town_hall_rested, self._town_hall_asked = 0, False, None
             self._storage_max_reads = {}
             self._storages_checked = {}
-            self._since_collect = self._since_home_collect = None
-            self._in_clan = self._next_request = self._capital_after = self._ranked_after = self._war_after = None
+            self._bb_collected_at = self._since_home_collect = None
+            self._in_clan = self._next_request = self._treasury_after = self._capital_after = self._ranked_after = self._war_after = None
             self._walls_known, self._builder_walls_known = {}, {}
             self.village, self._said_locked = None, set()
+            self._bb_report, self._bb_started, self._bb_sent_home, self._wake_visit = None, False, False, None
         return True
 
     def _claim(self, name: str) -> None:
@@ -683,6 +710,18 @@ class Bot:
             maxes.pop("dark", None)
         return maxes
 
+    def _star_bonus_due(self) -> "starbonus.Stars | None":
+        """The day's Star Bonus stars, when some are still to earn and the
+        bot is set to earn them: the next battle is then fought for stars."""
+        if not self.config.attack.star_bonus:
+            return None
+        self.game.refresh()
+        stars = starbonus.wanted(self.game)
+        if stars is not None:
+            log.info("Star Bonus: %d of %d stars earned today; this battle is fought for stars",
+                     stars.earned, stars.total)
+        return stars
+
     def _room(self, before: Loot | None, wanted: list[str]) -> dict[str, int] | None:
         """What the home storages that count (``wanted``, or all whose size
         is known) can still take: the battle ends once that's taken."""
@@ -737,6 +776,7 @@ class Bot:
         for job in human.order(self.game.rng, [self._collect, self._loot_cart, self._gravestones],
                                self.game.uses("chore_order")):
             self._extra(job)
+        self._extra(self._treasury)  # (after the others: their order stays as it was)
         self.checkpoint()
         for job in human.order(self.game.rng, [self._clan_visit, self._capital], self.game.uses("chore_order")):
             self._extra(job)
@@ -828,6 +868,16 @@ class Bot:
             if self._on_village:
                 self._on_village(account, self.village)
 
+    def _upgrade_survey(self) -> upgradable.Survey | None:
+        """Where what's left to upgrade is kept (beside the village data):
+        the lists are read through for it once a day, and the window told."""
+        if self.village is None:
+            return None  # (kept for the Town Hall level it was read at: not known)
+        account = self._account
+        path = upgradable.path_for(self._village_path(account))
+        on_saved = (lambda: self._on_village(account, self.village)) if self._on_village else None
+        return upgradable.Survey(path, self.village, self._now().date().isoformat(), on_saved)
+
     def _village_stale(self, account: str | None, now: datetime) -> bool:
         """Read the village data again: not read today, or, while the
         village is young (research, heroes... still locked), not read in
@@ -884,7 +934,7 @@ class Bot:
             # The first round of a session always collects.
             due = self._collect_due or cfg.bot.collect_every
             if self._since_home_collect is None or self._since_home_collect + 1 >= due:
-                kinds = tuple(k for k in ("gold", "elixir", "dark") if getattr(cfg.bot, f"collect_{k}")
+                kinds = tuple(k for k in ("gold", "elixir", "dark", "ice") if getattr(cfg.bot, f"collect_{k}")
                               and not (k == "dark" and self._not_yet("dark", "collecting dark elixir drills")))
                 full = self.full_storages() if self._storage_sizes("home") else set()
                 if full & set(kinds):
@@ -914,6 +964,26 @@ class Bot:
                 log.info("Loot cart: left for later (the storages are full)")
                 return
             village.collect_loot_cart(self.game)
+
+    def _treasury(self) -> None:
+        if not self.config.bot.collect_treasury:
+            return
+        now = self._now()
+        if self._treasury_after and now < self._treasury_after:
+            return
+        library = self.game.vision.library
+        if not (library.has(T.CASTLE_LABEL) or library.has(T.CASTLE_BADGE)):
+            log.info("Treasury: no picture of the Clan Castle's label or badge (Advanced → Pictures); not collecting")
+            self._treasury_after = now + timedelta(days=1)
+            return
+        if self._all_full():
+            # It keeps what's in it, protected, until it's collected. (With
+            # some room, Collect takes what fits and the rest stays in it.)
+            log.info("Treasury: left for later (the storages are full)")
+            self._treasury_after = now + TREASURY_FULL_RETRY
+            return
+        done = village.collect_treasury(self.game)
+        self._treasury_after = now + (TREASURY_EVERY if done else TREASURY_FULL_RETRY)
 
     def _gravestones(self) -> None:
         if self.config.bot.clear_gravestones:
@@ -974,32 +1044,28 @@ class Bot:
         # in on what they upgraded, and a battle zooms out and centres its
         # view by itself, so nothing needs putting back.
         handed: dict = {}  # Buildings & Heroes, left open by the upgrades for the walls
+        # The kinds of upgrade before the walls' place in "What to upgrade
+        # first", and after it (none: the walls last, as by default). Those
+        # before get a full storage first and the walls what's left (one
+        # builder is kept for them); those after get what the walls leave.
+        before, after = upgrade.around_walls(cfg.upgrade.order, upgrade.home_kinds(cfg.upgrade), cfg.walls.enabled)
+        full: set[str] = set()
         if cfg.upgrade.enabled:
-            # Before walls: big upgrades get a full storage first, and walls
-            # get what's left (one builder is kept for them).
             full = self.full_storages()
             if full and self._recheck_storages("home"):
                 full = self.full_storages()  # bigger now (a storage built or upgraded): maybe not full
+            full |= self._upgrade_amounts_reached()  # (or holding the amount set to start at)
+            if cfg.upgrade.wake_up:
+                full = {"gold", "elixir", "dark"}  # tried with the loot held: what it covers starts
             if not full:
                 self._why_no_upgrades()
-            if full:
-                self.status("Upgrading")
-                report: dict = {}
-                started = upgrade.upgrade(self.game, cfg, self.read_resources, full, last=not cfg.walls.enabled,
-                                          hand_over=handed if cfg.walls.enabled else None, locked=self.locked(),
-                                          total=self.village.builders if self.village else 0, report=report)
-                self.session["upgrades"] += started
-                self._upgrade_idle = bool(report.get("idle")) and cfg.upgrade.buildings
-                if report.get("town_hall"):
-                    self._read_village_again()  # for when it'll be done
-                if started:
-                    self._left_selected = self._left_zoomed_in = not cfg.walls.enabled
-                if self.game.built_new:
-                    self._village_changed()
+            if full and (before or not after):
+                self._home_upgrades(full, before, walls_after=cfg.walls.enabled, handed=handed)
+        runs_after = bool(cfg.upgrade.enabled and full and after)  # (upgrades after the walls, this round)
         if cfg.walls.enabled:
             self.status("Upgrading walls")
             # (With the list still open, the numbers beside it aren't read: the upgrades say what's left.)
-            full = self.full_storages(loot=handed.get("loot")) if cfg.walls.only_when_full else None
+            walls_full = self.full_storages(loot=handed.get("loot")) if cfg.walls.only_when_full else None
             # Walls leave the gold searching needs: spent below it, there'd be no more battles to earn it back.
             search_gold = 0.0 if cfg.search.maintain_only else cfg.search.min_own_gold_share
             keep = cfg.storage.keep("home", {"gold": max(cfg.walls.keep_gold, search_gold),
@@ -1007,11 +1073,44 @@ class Bot:
             walls = cfg.walls
             if walls.use != "gold" and self._not_yet("wall_elixir", "elixir on walls"):
                 walls = dataclasses.replace(walls, use="gold")
-            self._round_walls = village.upgrade_walls(self.game, walls, self.read_resources, keep, full,
-                                                      self._walls_known, last=True, handed=handed)
+            self._round_walls = village.upgrade_walls(self.game, walls, self.read_resources, keep, walls_full,
+                                                      self._walls_known, last=not runs_after, handed=handed)
             self.session["walls"] += self._round_walls
-            # Even with none paid for, walls tapped are left selected and zoomed in on.
-            self._left_selected = self._left_zoomed_in = True
+            # Even with none paid for, walls tapped are left selected and zoomed in on (unless put back for the rest).
+            self._left_selected = self._left_zoomed_in = not runs_after
+        if runs_after:
+            self.status("Upgrading")
+            self._home_upgrades(full, after, walls_after=False, handed=None, first=not before)
+
+    def _home_upgrades(self, full: set[str], kinds: list[str], walls_after: bool, handed: dict | None,
+                       first: bool = True) -> None:
+        """The home village's upgrades of ``kinds`` (see :meth:`_upgrades`),
+        the list left open for the walls when they come next (``handed``).
+        ``first``: the round's first look at the list, so it's surveyed."""
+        cfg = self.config
+        self.status("Upgrading")
+        report: dict = {}
+        started = upgrade.upgrade(self.game, cfg, self.read_resources, full, last=not walls_after,
+                                  hand_over=handed if walls_after else None, locked=self.locked(),
+                                  total=self.village.builders if self.village else 0, report=report,
+                                  survey=self._upgrade_survey() if first else None, kinds=kinds,
+                                  walls_after=walls_after)
+        self.session["upgrades"] += started
+        if first or self._upgrade_report is None:
+            self._upgrade_report = (report, started)
+        else:  # the round's second run (after the walls): its findings over the first's
+            was, before = self._upgrade_report
+            self._upgrade_report = ({**was, **{k: v for k, v in report.items() if v is not None}},
+                                    before + started)
+        if "building" in kinds or first:
+            # (what the round's buildings did: whether more loot has anywhere to go)
+            self._upgrade_idle = bool(report.get("idle")) and cfg.upgrade.buildings
+        if report.get("town_hall"):
+            self._read_village_again()  # for when it'll be done
+        if started:
+            self._left_selected = self._left_zoomed_in = not walls_after
+        if self.game.built_new:
+            self._village_changed()
 
     def _read_village_again(self) -> None:
         """The village data is read again next round, not tomorrow."""
@@ -1082,22 +1181,244 @@ class Bot:
         self._read_village_again()  # is it done? (and the new Town Hall's level)
         return True
 
+    def _wake_note(self, why: str) -> None:
+        if why != self._wake_said:
+            self._wake_said = why
+            log.info("Close between upgrades: %s", why)
+
+    def _slots_left(self, wanted: dict[str, bool]) -> dict[str, bool]:
+        """For each slot ("builders", "lab"): True if nothing is left to start
+        with it (by the lists read through, and the village data)."""
+        from farmbot import gamedata
+
+        u = self.config.upgrade
+        path = upgradable.path_for(self._village_path(self._account))
+        now = self._now().timestamp()
+        builders: tuple[str, ...] | None = None  # (anything in the list, walls aside)
+        if u.only:  # the buildings picked, and what builders go to besides
+            builders = (*u.only, *(("Town Hall",) if u.town_hall else ()),
+                        *(gamedata.HEROES.values() if u.heroes and "heroes" not in self.locked() else ()))
+        out = {}
+        for slot, which, picks in (("builders", "buildings", builders),
+                                   ("lab", "research", tuple(u.research_only) or None)):
+            left = upgradable.left_to_start(path, self.village, which, picks, now) if wanted[slot] else set()
+            if left is not None and picks is None:
+                left.discard("Wall")  # (walls have settings of their own)
+            out[slot] = left is not None and not left
+        return out
+
+    def _village_recent(self) -> bool:
+        """The village data is from the last WAKE_REREAD (its own time)."""
+        stamp = self.village.timestamp if self.village is not None else 0
+        return bool(stamp) and self._now() - datetime.fromtimestamp(stamp) < WAKE_REREAD
+
+    def _fresh_village(self, now: bool = False) -> bool:
+        """Read the village data again (when what's under way ends): at most
+        every WAKE_REREAD, or ``now``. True if read."""
+        when = self._now()
+        if not now and self._wake_read_at is not None and when - self._wake_read_at < WAKE_REREAD:
+            return False
+        self._wake_read_at = when
+        if self._left_selected:
+            village.deselect(self.game)
+            self._left_selected = False
+        village.clear_popups(self.game)
+        before = self.village
+        self._read_village_again()
+        self.know_village()
+        return self.village is not None and self.village is not before
+
+    def _wake_on(self) -> bool:
+        """Upgrades → "Close COCFARM between upgrades" is on, with upgrades
+        on in either village."""
+        u = self.config.upgrade
+        return bool(u.wake_up and (u.enabled or self.config.builder.upgrade))
+
+    def _home_slots_wanted(self) -> dict[str, bool]:
+        """The home village's slots its upgrades use ("builders", "lab");
+        none in mode "builder" (while the builder base can be farmed)."""
+        u, locked = self.config.upgrade, self.locked()
+        on = u.enabled and (self.config.bot.mode != "builder" or "builder_base" in locked)
+        return {"builders": bool(on and (u.buildings or (u.heroes and "heroes" not in locked))),
+                "lab": bool(on and u.lab and "research" not in locked)}
+
+    def _bb_slots_wanted(self) -> dict[str, bool]:
+        """The builder base's slots its upgrades use ("bb_builders",
+        "bb_lab"): only while the builder base is farmed (mode "auto" or
+        "builder", unlocked, its boat found)."""
+        b, mode, locked = self.config.builder, self.config.bot.mode, self.locked()
+        on = (b.upgrade and mode != "home" and "builder_base" not in locked
+              and not (mode == "auto" and (self._no_boat or self._extra_off("builder"))))
+        return {"bb_builders": bool(on and (b.upgrade_buildings or (b.upgrade_heroes
+                                                                    and "builder_heroes" not in locked))),
+                "bb_lab": bool(on and b.upgrade_lab)}
+
+    def _bb_ended_since(self) -> set[str]:
+        """The builder base's slots with an upgrade done since it last looked there."""
+        if self._bb_report is None or self.village is None:
+            return set()
+        at, now = self._bb_report[1], self._now().timestamp()
+        return {"bb_" + slot for slot, times in self.village.builder_finishing.items()
+                if any(at < t <= now for t in times)}
+
+    def _bb_free(self) -> dict[str, int | None]:
+        """What the builder base's last upgrades found free; None (not
+        known): not looked at yet, or one of its upgrades ended since."""
+        if self._bb_report is None:
+            return {"bb_builders": None, "bb_lab": None}
+        report = self._bb_report[0]
+        free = {"bb_builders": report.get("builders_left"), "bb_lab": report.get("lab_free")}
+        for slot in self._bb_ended_since():
+            free[slot] = None
+        return free
+
+    def _bb_spent(self) -> dict[str, bool]:
+        """The builder base's slots free with nothing to start there (its
+        storages full and nothing started), unless one ended since."""
+        spent = dict(self._bb_report[0].get("spent") or {}) if self._bb_report is not None else {}
+        for slot in self._bb_ended_since():
+            spent.pop(slot, None)
+        return spent
+
+    def _bb_go_home(self) -> bool:
+        """After the builder base's upgrades, with "Close COCFARM between
+        upgrades": a builder or the Star Laboratory free there farms on
+        here for the loot; all busy, it sails home (once after each start
+        there) to read the village data and decide there. True: home."""
+        needs = wakeup.needing(self._bb_slots_wanted(), self._bb_free(), self._bb_spent())
+        if needs:
+            self._wake_note("a builder or the Star Laboratory is free in the builder base: farming there for "
+                            "the loot to start the next upgrade")
+            known = self._bb_report is not None and any(self._bb_report[0].get(k) is not None
+                                                        for k in ("builders_left", "lab_free"))
+            self._wake_visit = "builder" if known and self.config.bot.mode == "auto" else None
+            return False
+        if self._bb_sent_home:
+            return False  # (decided at home since: farming on here)
+        self._bb_sent_home = True
+        self._wake_visit = "home"
+        log.info("Close between upgrades: every builder base builder busy: sailing home to read when they're done")
+        return True
+
+    def _leave_for_upgrades(self) -> bool:
+        """Upgrades → "Close COCFARM between upgrades": after the round's
+        upgrades, with every builder (and laboratory) the upgrades may use
+        in both villages busy, or with nothing left to start, close the
+        game; Windows opens COCFARM again when the first upgrade under way
+        is done (``farmbot/wakeup.py``). Sooner than wakeup.SOON, or with
+        the task not set, it's waited out here. A slot free with something
+        left for it: farm on for the loot, in its village. Decided in the
+        home village, where the village data is read. True if this round
+        ends here (closed; or off to the builder base, to farm or look)."""
+        found, self._upgrade_report = self._upgrade_report, None
+        visiting = self._wake_visit == "home"
+        if not self._wake_on() or (found is None and not visiting):
+            return False
+        self._wake_visit = None
+        if not self.config.bot.read_village:
+            self._wake_note("it needs the village data (Read the village data, under Advanced) for when "
+                            "upgrades are done: farming on")
+            return self.playing() != "home"
+        report, started = found if found is not None else ({}, 0)
+        wanted = {**self._home_slots_wanted(), **self._bb_slots_wanted()}
+
+        def decide() -> tuple[str, float | None, list[str]]:
+            free = {"builders": report.get("builders_left"), "lab": report.get("lab_free"), **self._bb_free()}
+            spent = {**self._slots_left(wanted), **self._bb_spent()}
+            what_, at_ = wakeup.decide(wanted, free, spent, wakeup.ends(self.village, self._now().timestamp()))
+            return what_, at_, wakeup.needing(wanted, free, spent)
+
+        if (started or self._bb_started) and self._fresh_village(now=True):  # (what was just started: busy now)
+            self._bb_started = False
+        what, at, needs = decide()
+        if what != "farm" and not self._village_recent() and self._fresh_village():
+            what, at, needs = decide()  # the time it closes until: from new data
+        if what == "farm":
+            if {"builders", "lab"} & set(needs):
+                self._wake_note("a builder or the laboratory is free: farming for the loot to start the next "
+                                "upgrade")
+                self._wake_visit = "home" if self.config.bot.mode == "auto" else None
+                return False
+            self._wake_note("a builder or the Star Laboratory may be free in the builder base: going there")
+            self._wake_visit = "builder"
+            return self.playing() != "home"
+        if not self._village_recent() or self._bb_started:
+            self._wake_note("couldn't read the village data for when the upgrades are done: farming on")
+            return self.playing() != "home"
+        ends = wakeup.ends(self.village, self._now().timestamp())
+        unknown = [s for s in ("bb_builders", "bb_lab") if wanted[s] and not ends[s] and not self._bb_spent().get(s)]
+        if what == "stop" and unknown:
+            self._wake_note("the builder base's upgrades are under way, but the village data doesn't say when "
+                            "they're done: farming on")
+            return self.playing() != "home"
+        if what == "stop":
+            self._wake_note("nothing is being upgraded and nothing is left to start: farming on")
+            return self.playing() != "home"
+        self._wake_said = None
+        now = self._now()
+        back = datetime.fromtimestamp(at) + wakeup.AFTER
+        try:
+            self.game.device.stop_app(self.config.device.package)
+        except DeviceError as stop:
+            log.info("Couldn't close the game: %s", stop)
+        self._left_selected = self._left_zoomed_in = False  # (the game opens afresh)
+        if back - now >= wakeup.SOON and self._schedule_wake is not None and self._schedule_wake(back):
+            self.left_until = back
+            log.info("Close between upgrades: every builder and laboratory is busy: closing until %s",
+                     f"{back:%a %H:%M}")
+            self.notifier.send("Closed until the next upgrade", "Every builder (and laboratory) is busy, so "
+                               f"COCFARM closed. Windows opens it again at {back:%a %H:%M} for the next upgrade.",
+                               "on_stopped", "info")
+            self.status(f"Closed until {back:%a %H:%M}: Windows opens COCFARM for the next upgrade")
+            return True
+        if back - now >= wakeup.SOON:
+            log.info("Close between upgrades: Windows wasn't set to open COCFARM: waiting with it open")
+        log.info("Close between upgrades: every builder and laboratory is busy: waiting until %s",
+                 f"{back:%a %H:%M}")
+        self.status(f"Every builder busy: the next upgrade at {back:%a %H:%M}")
+        self._rest(max((back - now).total_seconds(), 0))
+        self.checkpoint()
+        return True
+
+    def _upgrade_start_amounts(self) -> dict[str, int]:
+        """The amounts set for upgrades to start at (resource -> amount),
+        less dark elixir before the account has it."""
+        u = self.config.upgrade
+        starts = {"gold": u.start_gold, "elixir": u.start_elixir, "dark": u.start_dark}
+        return {k: v for k, v in starts.items() if v > 0 and not (k == "dark" and "dark" in self.locked())}
+
+    def _upgrade_amounts_reached(self) -> set[str]:
+        """The resources holding at least the amount set for upgrades to
+        start at (the storages' sizes needn't be known)."""
+        starts = self._upgrade_start_amounts()
+        if not starts:
+            return set()
+        loot = self.read_resources()
+        return set() if loot is None else {k for k, v in starts.items() if getattr(loot, k) >= v}
+
     def _why_no_upgrades(self) -> None:
         """Say why no upgrade starts this round (they wait for a full
-        storage): how full each is, or that their sizes aren't known yet,
-        and when walls are what keeps them from filling."""
+        storage, or the amount set): how full each is and the amounts set,
+        or that the sizes aren't known yet, and when walls are what keeps
+        them from filling."""
         maxes = self._storage_sizes("home")
-        if not maxes:
+        starts = self._upgrade_start_amounts()
+        if not maxes and not starts:
             log.info("Upgrades: waiting to read how much the storages hold (from their \"Max\" box)")
             return
         loot = self.read_resources()
         if loot is None:
             return
         shares = ", ".join(f"{k} {min(getattr(loot, k) / most, 1):.0%}" for k, most in maxes.items() if most)
+        amounts = ", ".join(f"{k} {getattr(loot, k):,} of {v:,}" for k, v in starts.items())
         walls = self.config.walls
         hint = ("; walls spend it down each round: turn on Walls → \"Only when storage is full\" to let it fill"
                 if walls.enabled and not walls.only_when_full else "")
-        log.info("Upgrades: they start once a storage is full (%s)%s", shares, hint)
+        if starts:
+            log.info("Upgrades: they start once a storage is full or holds the amount set (%s)%s",
+                     "; ".join(filter(None, (shares and f"full: {shares}", f"amounts: {amounts}"))), hint)
+        else:
+            log.info("Upgrades: they start once a storage is full (%s)%s", shares, hint)
 
     def raid_capital(self) -> None:
         """Clan Capital raids, with every raid attack left, on Raid Weekends
@@ -1120,6 +1441,8 @@ class Bot:
         self.session["raids"] += raids
         if raids:
             log.info("Clan Capital: %d raid(s) made", raids)
+            self.notifier.send(f"Clan Capital · {raids} raid{'s' if raids > 1 else ''}", raid_report(capital.results),
+                               event="on_raids")
         # Back home the village is shown at its default zoom.
         self.game.zoom_out()
 
@@ -1165,6 +1488,8 @@ class Bot:
         at home and moves to the builder base once the storages are full)."""
         mode = self.config.bot.mode
         village = (self.auto_village or self.config.bot.auto_first) if mode == "auto" else mode
+        if self._wake_visit and mode != "home" and self._wake_on():
+            village = self._wake_visit  # (Close between upgrades: to read the village data, or for loot)
         if village == "builder" and self._not_yet("builder_base", "the Builder Base (farming the home village)"):
             return "home"
         if village == "builder" and mode == "auto" and (self._no_boat or self._extra_off("builder")):
@@ -1176,6 +1501,7 @@ class Bot:
         other village, or, once both are full, stops. Returns True if this
         round should end here."""
         self.full_villages.add(village)
+        self._wake_visit = None  # (full: no more loot to farm here)
         other = "builder" if village == "home" else "home"
         names = {"home": "home village", "builder": "builder base"}
         if other in self.full_villages:
@@ -1196,6 +1522,8 @@ class Bot:
     def _clock_tower(self) -> None:
         bcfg = self.config.builder
         if bcfg.clock_tower and not self._clock_off:
+            if not builder.clock_ready(self.game):
+                return  # (most rounds: no need to read the gems first)
             gems = self.read_resources()
             if builder.boost_clock_tower(self.game):
                 after = self.read_resources()
@@ -1261,7 +1589,9 @@ class Bot:
         self.checkpoint()
         if bcfg.collect_resources:
             # The first battle of a session always collects.
-            if self._since_collect is None or self._since_collect >= bcfg.collect_every:
+            # (by time, not battles: the collectors fill by the hour)
+            waited = None if self._bb_collected_at is None else self.game.clock() - self._bb_collected_at
+            if waited is None or waited >= bcfg.collect_minutes * 60:
                 # A full storage's collectors can't be emptied (tapping them selects them instead).
                 full = self.full_storages("builder")
                 kinds = tuple(k for k in ("gold", "elixir", "gems") if k not in full)
@@ -1269,9 +1599,9 @@ class Bot:
                     builder.collect_resources(self.game, kinds=kinds, restore=False)
                 else:
                     log.info("Builder storages full: not collecting")
-                self._since_collect = 0
+                self._bb_collected_at = self.game.clock()
             else:
-                log.info("Builder collectors: next in %d battle(s)", bcfg.collect_every - self._since_collect)
+                log.info("Builder collectors: next in %d min", -(-(bcfg.collect_minutes * 60 - waited) // 60))
         self.checkpoint()
         self.game.ledger.begin("builder", "upgrades")
         # Upgrades last, just before the battle: they leave the camera zoomed
@@ -1279,17 +1609,55 @@ class Bot:
         # it isn't put back. Unless mode "auto" may sail home first.
         wanted = [k for k in self.config.bot.stop_when_full if k in ("gold", "elixir")]  # (no dark elixir here)
         may_leave = self.config.bot.mode == "auto" and bool(wanted)
+        wake = self._wake_on() and any(self._bb_slots_wanted().values())
+        # The upgrades before the walls' place in the order, and after it (none: walls last, as by default).
+        before_walls, after_walls = (upgrade.around_walls(bcfg.upgrade_order, upgrade.builder_kinds(bcfg), bcfg.walls)
+                                     if bcfg.upgrade else ([], []))
+        bb_full: set[str] = set()
+        round_report: dict = {}  # both runs' findings (around the walls), the later one's over the earlier's
+        round_started = 0
+
+        def bb_upgrades(kinds: list[str], walls_after: bool) -> None:
+            nonlocal round_started
+            self.status("Upgrading (builder base)")
+            last = not walls_after and not may_leave and not wake
+            report: dict = {}
+            started = upgrade.upgrade_builder_base(self.game, bcfg, self.read_resources, bb_full, last=last,
+                                                   total=self.village.builder_base_builders if self.village else 0,
+                                                   report=report, kinds=kinds, walls_after=walls_after)
+            self.session["upgrades"] += started
+            self._left_selected = last
+            round_started += started
+            round_report.update({k: v for k, v in report.items() if v is not None or k not in round_report})
+
+        def bb_reported() -> None:
+            """With "Close COCFARM between upgrades": what this round's upgrades found."""
+            if not wake or not bb_full:
+                return
+            if not round_started and {"gold", "elixir"} <= self.full_storages("builder"):
+                # Full storages, and nothing started: nothing's left there that loot would start.
+                round_report["spent"] = {"bb_builders": bool(round_report.get("builders_left")),
+                                         "bb_lab": bool(round_report.get("lab_free"))}
+            self._bb_report = (round_report, self._now().timestamp())
+            if round_started:
+                self._bb_started, self._bb_sent_home = True, False
+
         if bcfg.upgrade:
             # Before walls (one builder is kept for them), and before mode
             # "auto" moves on: spending a full storage keeps this village going.
-            full = self.full_storages("builder")
-            if full & {"gold", "elixir"}:
-                self.status("Upgrading (builder base)")
-                last = not bcfg.walls and not may_leave
-                self.session["upgrades"] += upgrade.upgrade_builder_base(self.game, bcfg, self.read_resources, full,
-                                                                         last=last, total=self.village.builder_base_builders
-                                                                         if self.village else 0)
-                self._left_selected = last
+            bb_full = self.full_storages("builder")
+            if wake:
+                bb_full = {"gold", "elixir"}  # tried with the loot held: what it covers starts
+            if not bb_full & {"gold", "elixir"}:
+                bb_full = set()
+            elif before_walls or not after_walls:
+                bb_upgrades(before_walls, walls_after=bcfg.walls)
+        bb_runs_after = bool(bb_full and after_walls)  # (upgrades after the walls, this round)
+        if not bb_runs_after:
+            bb_reported()
+            if wake and self._bb_go_home():
+                self._no_battle()
+                return False
         walls = 0
         if bcfg.walls:
             # Before mode "auto" moves on, as the upgrades: walls spend a full
@@ -1298,9 +1666,15 @@ class Bot:
             keep = self.config.storage.keep("builder", {"gold": bcfg.walls_keep_gold,
                                                          "elixir": bcfg.walls_keep_elixir})
             walls = builder.upgrade_walls(self.game, bcfg, self.read_resources, keep, self._builder_walls_known,
-                                          last=not may_leave)
+                                          last=not may_leave and not bb_runs_after)
             self.session["walls"] += walls
-            self._left_selected = not may_leave
+            self._left_selected = not may_leave and not bb_runs_after
+        if bb_runs_after:
+            bb_upgrades(after_walls, walls_after=False)
+            bb_reported()
+            if wake and self._bb_go_home():
+                self._no_battle()
+                return False
         if may_leave and set(wanted) <= self.full_storages("builder"):
             self._village_full("builder")
             return False
@@ -1318,8 +1692,6 @@ class Bot:
         seconds = self.game.clock() - started
         self._left_selected = False  # the battle dropped it
         self._since_cart += 1
-        if self._since_collect is not None:
-            self._since_collect += 1
         self.attacks += 1
         self.attacks_today += 1
         self._since_break += 1
@@ -1371,6 +1743,8 @@ class Bot:
                 raise builder.BuilderError("couldn't sail back to the home village")
         self._upgrade_idle, self._round_walls = False, 0
         self.maintain_village()
+        if self._leave_for_upgrades():
+            return False
         self._extra(self.war_attacks)  # before farming: the clan's war comes first
         self._extra(self.ranked_attacks)  # ...then the day's ranked attacks
         before = self.read_resources()
@@ -1405,6 +1779,7 @@ class Bot:
                 self._no_battle()
                 return False
         self.checkpoint()
+        bonus = self._star_bonus_due()  # (read on the village: the battle menu covers the strip)
         self.game.ledger.begin("home", "search")
         self.status("Searching for a base")
         boosts = cfg.attack.super_troops and not self._not_yet("super_troops", "super troop boosts")
@@ -1427,7 +1802,8 @@ class Bot:
         self.game.ledger.begin("home", "battle")
         self.status("Attacking")
         self._pending = AttackRecord(self._now(), target, before)
-        self._pending.taken = attack.attack(self.game, cfg, target, room=self._room(before, wanted))
+        self._pending.taken = attack.attack(self.game, cfg, target, room=self._room(before, wanted),
+                                            for_stars=bonus is not None)
         self._left_selected = False  # the battle dropped it
         self.attacks += 1
         self.attacks_today += 1
@@ -1436,9 +1812,13 @@ class Bot:
         # Read the gain as soon as we're home, so the last attack of a run
         # is logged with it too.
         if self.game.wait_for(T.BATTLE, timeout=20, interval=1):
-            # The Star Bonus window opens a moment after the village shows.
-            if self.game.has(T.OKAY):
-                self.game.wait_for(T.OKAY, timeout=STAR_BONUS_WAIT, interval=1)
+            # The Star Bonus window opens a moment after the village shows
+            # (its button "Claim" since November 2026, "Okay" before).
+            closes = [name for name in (T.STAR_BONUS_CLAIM, T.OKAY) if self.game.has(name)]
+            deadline = self.game.clock() + STAR_BONUS_WAIT
+            while closes and not any(self.game.find(name) for name in closes) and self.game.clock() < deadline:
+                self.game.wait(1, exact=True)
+                self.game.refresh()
             village.clear_popups(self.game)
             after = self.read_resources()
             if after is not None:  # otherwise the next round's reading settles it
@@ -1494,7 +1874,7 @@ class Bot:
                         self._maintenance_since = None
                     if builder_extra:
                         self._extra_fails["builder"] = 0
-                    if self.storage_full:
+                    if self.storage_full or self.left_until is not None:
                         break
                 except Stopped:
                     raise
@@ -1563,15 +1943,15 @@ class Bot:
                 self.notifier.alert("stopped", title, text, "on_critical_error", "error", **summary)
             raise
         self._settle_attack(None)
-        if self.playing() == "builder" and self.config.builder.return_home_after:
+        if self.playing() == "builder" and self.config.builder.return_home_after and self.left_until is None:
             try:
                 builder.go_to_home_village(self.game)
             except Exception as exc:  # the bot is stopping anyway
                 log.info("Couldn't sail home: %s", exc)
-        if not self.storage_full:
+        if not self.storage_full and self.left_until is None:
             self.status(f"Stopped: all {limit} attacks played" if limit and self.attacks >= limit else "Stopped")
         log.info("Finished after %d attack(s)", self.attacks)
-        if not self.storage_full:
+        if not self.storage_full and self.left_until is None:
             g = self.gained
             self.notifier.send("Bot stopped", f"Finished after {self.attacks:,} "
                                f"attack{'' if self.attacks == 1 else 's'}.", "on_stopped", "summary",

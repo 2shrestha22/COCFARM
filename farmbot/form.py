@@ -19,7 +19,7 @@ SIDE_LABELS = {"nw": "Top-left (NW)", "ne": "Top-right (NE)", "sw": "Bottom-left
 @dataclass(frozen=True)
 class Field:
     path: str  # e.g. "search.min_gold"
-    kind: str  # amount | int | instance | float | percent | bool | text | sides | resources | hours | units | order | presets
+    kind: str  # amount | int | instance | float | percent | bool | text | sides | resources | hours | units | order | buildings | presets
     low: float | None = None
     high: float | None = None
 
@@ -36,6 +36,7 @@ FIELDS = [
     Field("search.maintain_only", "bool"),
     # Attack
     Field("attack.sides", "sides"),
+    Field("attack.placement", "text"),
     Field("attack.waves", "int", 1, 3),
     Field("attack.troop_speed", "int", 1, 9),
     Field("attack.wave_speed", "int", 1, 9),
@@ -49,6 +50,7 @@ FIELDS = [
     Field("attack.ability_health", "percent", 0, 95),
     Field("attack.ability_max_wait", "float", 5, 180),
     Field("attack.speed_up", "bool"),
+    Field("attack.star_bonus", "bool"),
     Field("attack.end_when_no_loot", "bool"),
     Field("attack.no_loot_seconds", "float", 3, 180),
     Field("attack.end_at_loot_share", "percent", 0, 100),
@@ -63,9 +65,11 @@ FIELDS = [
     Field("bot.collect_gold", "bool"),
     Field("bot.collect_elixir", "bool"),
     Field("bot.collect_dark", "bool"),
+    Field("bot.collect_ice", "bool"),
     Field("bot.collect_every", "int", 1, 100),
     Field("bot.collect_loot_cart", "bool"),
     Field("bot.clear_gravestones", "bool"),
+    Field("bot.collect_treasury", "bool"),
     Field("bot.read_village", "bool"),
     Field("bot.stop_when_full", "resources"),
     Field("bot.mode", "text"),
@@ -88,7 +92,7 @@ FIELDS = [
     Field("builder.return_home_after", "bool"),
     Field("builder.speed_up", "bool"),
     Field("builder.collect_resources", "bool"),
-    Field("builder.collect_every", "int", 1, 100),
+    Field("builder.collect_minutes", "int", 0, 1440),
     Field("builder.collect_cart", "bool"),
     Field("builder.cart_every_min", "int", 1, 100),
     Field("builder.cart_every_max", "int", 1, 100),
@@ -115,9 +119,17 @@ FIELDS = [
     Field("upgrade.lab", "bool"),
     Field("upgrade.buildings", "bool"),
     Field("upgrade.first", "text"),
+    Field("upgrade.only", "buildings"),
+    Field("upgrade.research_only", "research"),
+    Field("upgrade.start_gold", "amount"),
+    Field("upgrade.start_elixir", "amount"),
+    Field("upgrade.start_dark", "amount"),
     Field("upgrade.new_buildings", "bool"),
     Field("upgrade.town_hall", "bool"),
     Field("upgrade.wait_for_town_hall", "bool"),
+    Field("upgrade.wake_up", "bool"),
+    Field("upgrade.apprentice", "bool"),
+    Field("upgrade.lab_assistant", "bool"),
     Field("upgrade.builders", "int", -1, 10),
     # What the storages hold
     Field("storage.gold", "amount"),
@@ -138,6 +150,11 @@ FIELDS = [
     Field("capital.raid", "bool"),
     Field("capital.miner_heal_at", "percent", 10, 95),
     Field("capital.fortress_heal_at", "percent", 10, 95),
+    Field("capital.district_order", "text"),
+    Field("capital.late_heal", "bool"),
+    Field("capital.heal_lead", "float", 0, 3),
+    Field("capital.spells_near_drop", "bool"),
+    Field("capital.lightning_near_drop", "bool"),
     Field("clan.request_every_minutes", "int", 1, 600),
     # Schedule
     Field("schedule.enabled", "bool"),
@@ -158,6 +175,7 @@ FIELDS = [
     Field("notify.on_stopped", "bool"),
     Field("notify.on_emulator_restart", "bool"),
     Field("notify.daily_summary", "bool"),
+    Field("notify.on_raids", "bool"),
     Field("notify.progress_every", "int", 0, 1000),
     Field("notify.on_critical_error", "bool"),
     Field("notify.on_deploy_failed", "bool"),
@@ -207,10 +225,10 @@ def _set(config: Config, path: str, value: Any) -> None:
 
 def _display(field: Field, value: Any) -> Any:
     if field.kind == "amount":
-        if field.path.startswith("storage.") and not value:
-            return ""  # not known yet
+        if field.path.startswith(("storage.", "upgrade.start_")) and not value:
+            return ""  # not known yet; for upgrades, once full
         return f"{value:,}"
-    if field.kind in ("sides", "resources", "hours", "units", "order"):
+    if field.kind in ("sides", "resources", "hours", "units", "order", "buildings", "research"):
         return list(value)
     if field.kind == "presets":  # {"13": ["1 Ice Golem", ...]} → {"13": "1 Ice Golem, ..."}
         return {level: ", ".join(entries) for level, entries in value.items()}
@@ -248,6 +266,10 @@ def _parse(field: Field, raw: Any) -> Any:
         return [name for name in dict.fromkeys(raw) if name in BY_NAME]  # in the order given
     if field.kind == "order":
         return list(dict.fromkeys(str(k) for k in raw))  # first to last
+    if field.kind in ("buildings", "research"):
+        from farmbot.tasks.row_names import PICKS
+
+        return [name for name in dict.fromkeys(raw) if name in PICKS[field.kind]]  # first to last
     if field.kind == "presets":
         from farmbot.castle import parse_entry
 
