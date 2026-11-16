@@ -6898,8 +6898,14 @@ class FarmbotWindow(FluentWindow):
 
     def listen_for_wake(self) -> None:
         """A COCFARM opened by Windows while this one is open hands the
-        start over to it (one COCFARM, one bot on the emulator)."""
-        from PySide6.QtNetwork import QLocalServer
+        start over to it (one COCFARM, one bot on the emulator). Never keeps
+        the window from opening: without Qt's networking (a build missing
+        it, as 1.9.0) a second COCFARM just opens beside this one."""
+        try:
+            from PySide6.QtNetwork import QLocalServer
+        except ImportError as exc:
+            log.warning("Can't listen for a second COCFARM opening (%s)", exc)
+            return
 
         from farmbot.gui_wake import wake_pipe
 

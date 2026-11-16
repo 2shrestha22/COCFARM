@@ -49,6 +49,7 @@ IDLE_WAIT = 60.0  # seconds between village rounds when not attacking
 WAKE_REREAD = timedelta(minutes=30)  # Close between upgrades: village data this old is read again (at most this often)
 STAR_BONUS_WAIT = 4.0  # seconds, after an attack, for the Star Bonus window to open over the village
 STARTUP_TIMEOUT = 90  # seconds to wait for the home village after starting the game
+UPDATE_LOOK = 10.0  # seconds of an unknown screen while loading before its words are read (the update window)
 # An emulator answers ADB before Android has finished starting up, and a game
 # started then is closed again: start it once Android has been up this long.
 BOOT_SETTLE = 20.0
@@ -426,7 +427,13 @@ class Bot:
             # shows something known (a village, wherever it was left, or a
             # chest room or popup, which the round deals with next).
             deadline = self.game.clock() + STARTUP_TIMEOUT
+            words_at = self.game.clock() + UPDATE_LOOK
             while (screen := screens.identify(self.game)) is screens.Screen.UNKNOWN:
+                if self.game.clock() >= words_at:  # still loading, or the game's update window (its words)
+                    words_at = self.game.clock() + UPDATE_LOOK
+                    if self._update_game(package):
+                        deadline = self.game.clock() + STARTUP_TIMEOUT
+                        continue
                 if self.game.clock() >= deadline:
                     log.info("Nothing known on screen after %ds; carrying on", STARTUP_TIMEOUT)
                     return
@@ -437,6 +444,23 @@ class Bot:
                 log.info("Game loaded: %s", screen.value)
                 return
             log.info("The game closed while loading; starting it again")
+
+    def _update_game(self, package: str) -> bool:
+        """The game's "new version" window over its loading screen: Update
+        pressed and installed from the Play Store (``gameupdate``). True if
+        the window showed."""
+        from farmbot import gameupdate, wordbuttons
+
+        try:
+            button = gameupdate.find_button(wordbuttons.read(self.game.refresh()))
+        except Exception as exc:  # (no OCR on this Windows)
+            log.debug("Couldn't read the screen's words: %s", exc)
+            return False
+        if button is None:
+            return False
+        self.status("Updating Clash of Clans")
+        gameupdate.update(self.game, button, package)
+        return True
 
     def _game_alive(self, package: str) -> bool:
         """Whether the game's process still runs: another window (a system

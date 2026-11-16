@@ -18,7 +18,10 @@ def wake_pipe() -> str:
 def hand_over_start(name: str | None = None) -> bool:
     """Opened to start while a COCFARM is open: that one is told to start
     instead. True if it was."""
-    from PySide6.QtNetwork import QLocalSocket
+    try:
+        from PySide6.QtNetwork import QLocalSocket
+    except ImportError:  # (a build without Qt's networking: this one opens instead)
+        return False
 
     sock = QLocalSocket()
     sock.connectToServer(name or wake_pipe())

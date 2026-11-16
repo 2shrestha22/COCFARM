@@ -53,12 +53,14 @@ Automating Clash of Clans breaks Supercell's Terms of Service.
 
 
 # Bundled files the app never loads (it reads screenshots, not video, and
-# draws its window with Qt Widgets: no QML, PDF, networking or translations).
+# draws its window with Qt Widgets: no QML, PDF or translations). QtNetwork
+# stays: one COCFARM open at a time talks over its local pipe (gui_wake.py);
+# 1.9.0 left it out and wouldn't open (issue 19).
 # About 90 MB unpacked; every update downloads the zip, so this matters.
 UNUSED_FILES = [
     "cv2/opencv_videoio_ffmpeg*.dll",  # video codecs
     "PySide6/opengl32sw.dll",  # software OpenGL fallback
-    "PySide6/QtOpenGL.pyd", "PySide6/QtNetwork.pyd", "PySide6/Qt6Network.dll",
+    "PySide6/QtOpenGL.pyd",
     "PySide6/Qt6Pdf.dll", "PySide6/Qt6Qml*.dll", "PySide6/Qt6Quick*.dll", "PySide6/Qt6VirtualKeyboard.dll",
     "PySide6/translations",
     "PySide6/plugins/tls", "PySide6/plugins/networkinformation", "PySide6/plugins/platforminputcontexts",

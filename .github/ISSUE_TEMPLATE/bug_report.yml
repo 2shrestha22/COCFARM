@@ -37,7 +37,7 @@ body:
       description: |
         Advanced → Bug report → **Copy for a bug report**, then paste here (Ctrl+V), right after the
         problem happens.
-      placeholder: COCFARM 1.9.0 report (personal details removed by COCFARM) ...
+      placeholder: COCFARM 1.9.1 report (personal details removed by COCFARM) ...
 
   - type: textarea
     id: steps

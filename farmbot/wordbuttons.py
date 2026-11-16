@@ -59,11 +59,18 @@ def read(image) -> list[tuple[Rect, str]]:
 def tap_safe_word(game) -> str | None:
     """On a screen no picture knows: tap the button saying a safe word, if
     one shows. Returns the word tapped."""
+    from farmbot import gameupdate
+
     try:
-        hit = find(read(game.refresh()))
+        lines = read(game.refresh())
     except Exception as exc:  # (no OCR on this Windows, say: the bot carries on without it)
         log.debug("Couldn't read the screen's words: %s", exc)
         return None
+    update = gameupdate.find_button(lines)  # the game's update window: Update, never its Later
+    if update is not None:
+        gameupdate.update(game, update)
+        return "update"
+    hit = find(lines)
     if hit is None:
         return None
     word, r = hit

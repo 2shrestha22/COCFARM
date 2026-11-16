@@ -18,6 +18,13 @@ from farmbot.update import STATE, _load, _save, parse_version
 KINDS = ["New", "Improved", "Fixed"]
 
 NOTES: dict[str, list[tuple[str, str, str]]] = {
+    "1.9.1": [
+        ("Fixed", "COCFARM opens again",
+         "1.9.0's window didn't open: a part of Qt it needs was left out of the download."),
+        ("New", "The game is updated for you",
+         "When Clash of Clans asks for a new version, COCFARM presses Update, updates it in the Play Store, "
+         "waits for the first load and carries on. The Play Store in the emulator must be signed in."),
+    ],
     "1.9.0": [
         ("Fixed", "Works with the November game update",
          "The bigger Continue button under a chest's reward, the new Request button in clan chat, the "
