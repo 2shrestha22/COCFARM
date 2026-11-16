@@ -4680,6 +4680,9 @@ class FarmbotWindow(FluentWindow):
                      "bot.collect_ice", "bot.collect_every")
         self.switch(village, "bot.collect_loot_cart", FIF.SHOPPING_CART, "Collect the loot cart",
                     "Empties the loot cart when it shows \"Collect\".")
+        self.switch(village, "bot.use_snacks", FIF.CAFE, "Use snacks and potions",
+                    "When the box left of Build shows a number: uses every item marked Use (green). Ones already "
+                    "working (blue) and ones that can't be used yet (grey, \"Full!\") are left alone.")
         self.switch(village, "bot.clear_gravestones", FIF.BROOM, "Clear gravestones",
                     "After someone attacks you, taps a gravestone once: that clears them all.")
         self.switch(village, "bot.collect_treasury", Glyph.CASTLE, "Collect the Clan Castle treasury",
@@ -6268,7 +6271,8 @@ class FarmbotWindow(FluentWindow):
 
     def _offer_carry(self) -> None:
         """A new COCFARM folder while Installed apps points to another one with
-        your farms (a new release unzipped beside the old): ask to copy them here."""
+        your farms (a new release unzipped beside the old): ask to copy them here,
+        on the loading card (a box only when there's no card)."""
         from PySide6.QtWidgets import QMessageBox
 
         from farmbot import carry
@@ -6276,20 +6280,25 @@ class FarmbotWindow(FluentWindow):
         old = carry.FOUND
         if old is None or carry.other_copy(self.config_path.resolve().parent, old) is None:
             return
-        answer = QMessageBox.question(
-            None, "COCFARM",
-            f"Your farms and accounts are in another COCFARM folder:\n{old}\n\n"
-            "Copy its settings, accounts, farms, attack log and your own pictures here? "
-            "That folder stays as it is.",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
-        if answer != QMessageBox.Yes:
+        text = ("Your farms and accounts are in another COCFARM folder. Bring them over? "
+                "Settings, accounts, farms, the attack log and your own pictures are copied here; "
+                "that folder stays as it is.")
+        answer = splash.ask(text, ["Bring them over", "Start fresh"], detail=str(old))
+        if answer is None:  # no loading card: a box instead
+            answer = 0 if QMessageBox.question(
+                None, "COCFARM", f"{text}\n\n{old}", QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes) == QMessageBox.Yes else 1
+        if answer != 0:
             log.info("Not bringing the settings over from %s", old)
             return
+        splash.message("Bringing your farms over…")
         try:
             carry.bring(old, self.config_path.resolve().parent)
         except OSError as exc:
             log.error("Couldn't bring the settings over from %s: %s", old, exc)
-            QMessageBox.warning(None, "COCFARM", f"Couldn't copy everything from {old}: {exc}")
+            if splash.ask(f"Couldn't copy everything: {exc}", ["Okay"], detail=str(old)) is None:
+                QMessageBox.warning(None, "COCFARM", f"Couldn't copy everything from {old}: {exc}")
+        splash.message("Building the window…")
 
     def _after_update(self) -> None:
         from farmbot.update import finished_install

@@ -35,9 +35,17 @@ class TextStyle:
     # is bluish white), or None.
     skip_hue: tuple[int, int] | None = None
     skip_min_saturation: int = 40
+    # Only these hues (and at least this saturation) are text, or None: for
+    # numbers drawn in a colour rather than white.
+    hue: tuple[int, int] | None = None
+    min_saturation: int = 0
 
 
 SNOW = TextStyle(skip_hue=(85, 125))  # tried when a number can't be read: snow behind it
+# Pale yellow digits: a base's loot while "Loot Available 2x" is on (16 Nov
+# 2026): paler over a light base, deeper over a dark one; the light
+# background and the cupcake's white frosting left out.
+YELLOW = TextStyle(hue=(24, 36), min_saturation=40, max_saturation=230, min_value=215)
 
 
 def crop(screen: np.ndarray, region: Rect) -> np.ndarray:
@@ -58,6 +66,9 @@ def pieces(screen: np.ndarray, region: Rect, style: TextStyle = TextStyle()) -> 
         return []
     hsv = cv2.cvtColor(area, cv2.COLOR_BGR2HSV)
     mask = (hsv[:, :, 1] <= style.max_saturation) & (hsv[:, :, 2] >= style.min_value)
+    if style.hue:
+        lo, hi = style.hue
+        mask &= (hsv[:, :, 0] >= lo) & (hsv[:, :, 0] <= hi) & (hsv[:, :, 1] >= style.min_saturation)
     if style.skip_hue:
         lo, hi = style.skip_hue
         mask &= ~((hsv[:, :, 0] >= lo) & (hsv[:, :, 0] <= hi) & (hsv[:, :, 1] >= style.skip_min_saturation))

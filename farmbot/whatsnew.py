@@ -18,6 +18,17 @@ from farmbot.update import STATE, _load, _save, parse_version
 KINDS = ["New", "Improved", "Fixed"]
 
 NOTES: dict[str, list[tuple[str, str, str]]] = {
+    "1.9.2": [
+        ("New", "Snacks and potions are used for you",
+         "Turn on \"Use snacks and potions\" and, when the box left of Build shows a number, COCFARM uses every "
+         "item marked Use. Ones already working and greyed-out \"Full!\" ones are left alone."),
+        ("Fixed", "Boosted loot is read right",
+         "With a loot snack on, the loot shows in yellow and doubled: COCFARM reads it and judges each base on "
+         "its loot divided by the boost, so your minimums still mean what they say."),
+        ("Improved", "Settings carried over on the loading screen",
+         "After a new download, the question about bringing your farms over is asked on COCFARM's loading "
+         "screen instead of a separate window."),
+    ],
     "1.9.1": [
         ("Fixed", "COCFARM opens again",
          "1.9.0's window didn't open: a part of Qt it needs was left out of the download."),

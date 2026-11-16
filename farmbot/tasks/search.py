@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, replace
 from typing import Callable
 
@@ -10,7 +11,7 @@ from farmbot import human
 from farmbot.config import RegionsConfig, SearchConfig
 from farmbot.game import Game, T
 from farmbot.geometry import Rect
-from farmbot.text import SNOW, TextStyle
+from farmbot.text import SNOW, YELLOW, TextStyle
 
 log = logging.getLogger(__name__)
 
@@ -106,8 +107,15 @@ def look_at_base(game: Game, loot: Loot, criteria: SearchConfig, picked: bool, o
 def _loot_number(game: Game, regions: RegionsConfig, name: str) -> int | None:
     region = game.region(regions.rect(name))
     found = game.read_number(region, T.LOOT_FONT)
-    # Snow behind the digits passes for their white and joins them: again without its blue.
-    return found if found is not None else game.read_number(region, T.LOOT_FONT, SNOW)
+    if found is None:
+        # Snow behind the digits passes for their white and joins them: again without its blue.
+        found = game.read_number(region, T.LOOT_FONT, SNOW)
+    # With "Loot Available 2x" the digits are yellow (white reads bits of the
+    # cupcake beside them, "15"): the longer of the two readings is the number.
+    yellow = game.read_number(region, T.LOOT_FONT, YELLOW)
+    if yellow is not None and (found is None or len(str(yellow)) > len(str(found))):
+        return yellow
+    return found
 
 
 def read_loot(game: Game, regions: RegionsConfig) -> Loot | None:
@@ -118,6 +126,48 @@ def read_loot(game: Game, regions: RegionsConfig) -> Loot | None:
     # Dark elixir is absent on low town halls; treat unreadable as zero.
     dark = _loot_number(game, regions, "loot_dark") or 0
     return Loot(gold, elixir, dark)
+
+
+# A loot boost (a food item, 16 Nov 2026) shows "Loot Available 2x:" over a
+# base's loot, the numbers in yellow and already multiplied: a base is judged
+# on what it holds, the shown loot divided by the boost.
+BOOST_LABEL = 50  # px above the gold row the label sits in, at most
+BOOST_WORDS = ("loot", "ailable", "avail")  # (OCR reads the label loosely: "Loot·ailable 2k:")
+BOOST_NUMBER = re.compile(r"(\d+)\s*[x×k]")
+BOOST_USUAL = 2  # the boost when its label shows but its number can't be read
+
+
+def loot_boost(game: Game, regions: RegionsConfig) -> int:
+    """How many times the shown loot is multiplied: 1 without a boost, else
+    the label's number. The elixir row tells: white (pinkish) without one,
+    yellow with one (gold's digits are a little yellow either way)."""
+    elixir = game.region(regions.rect("loot_elixir"))
+    if game.read_number(elixir, T.LOOT_FONT, YELLOW) is None:
+        return 1
+    gold = game.region(regions.rect("loot_gold"))
+    from farmbot import wordbuttons
+
+    top = max(gold.y - BOOST_LABEL, 0)
+    try:
+        lines = wordbuttons.read(game.screen[top:gold.y + gold.h // 2, 0:gold.x + gold.w + 150])
+    except Exception as exc:  # (no OCR on this Windows: the usual boost)
+        log.debug("Couldn't read the loot boost's label: %s", exc)
+        lines = []
+    for _, text in lines:
+        low = text.lower()
+        if any(w in low for w in BOOST_WORDS):
+            found = BOOST_NUMBER.search(low.split("ailable")[-1])
+            if found and 1 < int(found.group(1)) <= 10:
+                return int(found.group(1))
+            return BOOST_USUAL
+    return BOOST_USUAL  # yellow loot digits are the boost's
+
+
+def unboosted(loot: Loot, boost: int) -> Loot:
+    """What a base holds, from the loot shown under a ``boost``."""
+    if boost <= 1:
+        return loot
+    return Loot(loot.gold // boost, loot.elixir // boost, loot.dark // boost)
 
 
 SETTLE_READS = 4  # tries at a steady reading of a base's loot
@@ -491,6 +541,7 @@ def search(game: Game, criteria: SearchConfig, regions: RegionsConfig, on_base: 
     last_view = None
     repeats = unreadable = 0
     zoomed = zoom_out
+    boost: int | None = None  # the loot boost, read on the first base whose loot reads
     for count in range(1, criteria.max_searches + 1):
         if not _wait_for_base(game):
             raise NextNotFound(f"next button never appeared in {NEXT_TIMEOUT}s; search screen not loaded")
@@ -514,17 +565,22 @@ def search(game: Game, criteria: SearchConfig, regions: RegionsConfig, on_base: 
             _press_next(game, criteria.next_delay)
             continue
         unreadable = 0
-        accepted = is_worth_attacking(loot, criteria)
-        slip = near_miss(game.rng, loot, criteria, accepted) if near else None
+        if boost is None:
+            boost = loot_boost(game, regions)
+            if boost > 1:
+                log.info("Loot boost %dx on: each base is judged on its loot shown divided by %d", boost, boost)
+        held = unboosted(loot, boost)
+        accepted = is_worth_attacking(held, criteria)
+        slip = near_miss(game.rng, held, criteria, accepted) if near else None
         if slip is not None:
             accepted = slip
-        log.info("Base %d: gold %s, elixir %s, dark %s%s%s", count, f"{loot.gold:,}", f"{loot.elixir:,}",
-                 f"{loot.dark:,}", "  → attack" if accepted else "",
+        log.info("Base %d: gold %s, elixir %s, dark %s%s%s%s", count, f"{held.gold:,}", f"{held.elixir:,}",
+                 f"{held.dark:,}", f" ({boost}x shown)" if boost > 1 else "", "  → attack" if accepted else "",
                  "" if slip is None else " (a little under the minimums: taken anyway)" if slip else
                  " (meets the minimums, only just: passed over)")
         if on_base:
-            on_base(loot, accepted)
-        look_at_base(game, loot, criteria, accepted, look)
+            on_base(held, accepted)
+        look_at_base(game, held, criteria, accepted, look)
         if accepted:
             return loot
         view = _view(game.screen)

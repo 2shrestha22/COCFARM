@@ -34,6 +34,7 @@ class Picture:
 
 
 QUICK_EXIT = "Leaving battles without restarting the game"
+SNACKS = "Using snacks and potions"
 BAT_SPELLS = "Casting only Bat Spells"
 WARDEN_SIDE = "Putting the Grand Warden with the most troops"
 SUPER_TROOPS = "Activating super troops"
@@ -107,6 +108,12 @@ PICTURES: list[Picture] = [
             "Collecting the loot cart"),
     Picture(T.LOOT_CART_COLLECT, "Loot cart Collect", "After tapping the loot cart: the word \"Collect\" on "
             "the button under it.", "Collecting the loot cart", folder=True),
+    Picture(T.SNACK_BOX, "Snack box", "Home village: the box left of Build (snacks and potions), without "
+            "the red number on its corner.", SNACKS, folder=True),
+    Picture(T.SNACK_USE, "Snack Use ribbon", "After tapping the snack box: the green \"Use\" ribbon over a "
+            "snack that can be used.", SNACKS, folder=True),
+    Picture(T.SNACK_USE_WINDOW, "Snack window Use", "After tapping a snack with a green ribbon: the word "
+            "\"Use\" on the big green button in its window.", SNACKS, folder=True),
     Picture(T.CASTLE_LABEL, "Clan Castle label", "Home village, nothing selected: the white word \"Full!\" or "
             "\"Request\" over your Clan Castle, tight around the word. The castle is found by it, in any clan.",
             TREASURY, folder=True),

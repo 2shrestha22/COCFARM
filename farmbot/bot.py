@@ -18,7 +18,7 @@ from farmbot.config import Config, search_minimums_for, unreachable_minimums, un
 from farmbot.device import DeviceError, GameNotInstalled, GaveUp
 from farmbot.game import Game, Stopped, T
 from farmbot.history import AttackRecord
-from farmbot.tasks import attack, browse, builder, capital, clan, export, ranked, search, super_troops, upgrade, village, war
+from farmbot.tasks import attack, browse, builder, capital, clan, export, ranked, search, snacks, super_troops, upgrade, village, war
 from farmbot.tasks.search import Loot
 
 log = logging.getLogger(__name__)
@@ -34,8 +34,10 @@ EXTRA_PAUSE = timedelta(hours=2)
 WAR_LOOK = timedelta(minutes=30)  # between looks at the clan war (battle day may have started)
 RANKED_LOOK = timedelta(hours=1)  # between looks for ranked attacks, once there are none to make
 TOWN_HALL_ROUNDS = 3  # rounds in a row with full storages and nothing to upgrade, before resting for the Town Hall
+SNACKS_LOOK = timedelta(hours=3)  # the snack box with nothing to use, its number unchanged: opened again after this
 TOWN_HALL_LOOK = timedelta(hours=2)  # the rest is cut into these: a potion or a book ends the upgrade sooner
 EXTRA_NAMES = {"_collect": "collecting", "_loot_cart": "the loot cart", "_gravestones": "gravestones",
+               "_snacks": "snacks and potions",
                "_treasury": "the Clan Castle treasury",
                "_clan_visit": "the clan (donations, requests)", "_capital": "Clan Capital raids",
                "_upgrades": "upgrades", "builder": "the Builder Base", "_browse": "looking around the game",
@@ -801,6 +803,7 @@ class Bot:
                                self.game.uses("chore_order")):
             self._extra(job)
         self._extra(self._treasury)  # (after the others: their order stays as it was)
+        self._extra(self._snacks)
         self.checkpoint()
         for job in human.order(self.game.rng, [self._clan_visit, self._capital], self.game.uses("chore_order")):
             self._extra(job)
@@ -980,6 +983,31 @@ class Bot:
         loot cart or collector holds would have nowhere to go."""
         sizes = self._storage_sizes("home")
         return {"gold", "elixir"} <= set(sizes) and set(sizes) <= self.full_storages()
+
+    def _snacks(self) -> None:
+        """Use the snacks waiting in the box. When it holds none to use (only
+        grey "Full!" ones), it isn't opened again until its number changes
+        or SNACKS_LOOK has passed."""
+        if not self.config.bot.use_snacks:
+            return
+        game = self.game
+        game.refresh()
+        box = snacks._box(game)
+        number = snacks.badge(game, box) if box is not None else None
+        if number is None:
+            return
+        now = self._now()
+        last = getattr(self, "_snack_badge", None)
+        if last is not None and snacks.same_badge(last[0], number) and now < last[1]:
+            return
+        used = snacks.use_snacks(game)
+        if used == 0:
+            log.info("Snacks: none to use now (looked again when the box's number changes)")
+            game.refresh()
+            box = snacks._box(game)
+            self._snack_badge = (snacks.badge(game, box) if box is not None else None, now + SNACKS_LOOK)
+        else:
+            self._snack_badge = None
 
     def _loot_cart(self) -> None:
         if self.config.bot.collect_loot_cart:

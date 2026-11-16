@@ -201,6 +201,9 @@ class T:
     BB_COST_ELIXIR = "builder/cost/elixir"
     LOOT_CART = "buttons/loot_cart"  # the "Collect" label over the loot cart
     LOOT_CART_COLLECT = "buttons/loot_cart_collect"  # the Collect button once it is selected
+    SNACK_BOX = "buttons/snack_box"  # the box left of Build: snacks and potions (a red number: some waiting)
+    SNACK_USE = "buttons/snack_use"  # the green "Use" ribbon over a snack that can be used, in the box's strip
+    SNACK_USE_WINDOW = "buttons/snack_use_window"  # the big green Use in a snack's window
     CASTLE_BADGE = "redact/castle_badge"  # your own Clan Castle's clan badge, village zoomed out (personal: kept out of git)
     CASTLE_LABEL = "buttons/castle_label"  # "Full!" or "Request" over the Clan Castle (the same in every clan)
     TREASURY = "buttons/treasury"  # under the selected Clan Castle

@@ -68,6 +68,7 @@ class _Splash(QWidget):
         self.text = ""
         self.logo = QPixmap(str(LOGO))
         self.grow = self.fade = 0.0
+        self.asking = False  # a question on the card (``ask``): its own layout
 
     def set_grow(self, t: float) -> None:
         self.grow = t
@@ -95,6 +96,20 @@ class _Splash(QWidget):
         x, middle, width = card.left(), card.center().y(), card.width()
         p.setClipPath(path)
         p.setOpacity(p.opacity() * (1 - t))
+        if self.asking:  # the logo smaller at the top, the name under it; the question's widgets below
+            top, centre = card.top(), card.center().x()
+            if not self.logo.isNull():
+                p.drawPixmap(QRectF(centre - ASK_LOGO / 2, top + ASK_LOGO_TOP, ASK_LOGO, ASK_LOGO),
+                             self.logo, QRectF(self.logo.rect()))
+            p.setPen(TEXT)
+            p.setFont(QFont("Segoe UI", 18, QFont.Weight.Bold))
+            p.drawText(QRectF(x, top + ASK_TITLE_TOP, width, 34), Qt.AlignmentFlag.AlignCenter, "COCFARM")
+            p.setPen(FAINT)
+            p.setFont(QFont("Segoe UI", 9))
+            p.drawText(QRectF(x, top + ASK_VERSION_TOP, width, 20), Qt.AlignmentFlag.AlignCenter,
+                       f"Version {__version__}")
+            p.end()
+            return
         if not self.logo.isNull():
             size = LOGO_SIZE * (1 + (GROW - 1) * t)
             p.drawPixmap(QRectF(card.center().x() - size / 2, middle + LOGO_MIDDLE - size / 2, size, size),
@@ -134,6 +149,92 @@ def message(text: str) -> None:
         _splash.text = text
         _splash.repaint()
         QApplication.processEvents()
+
+
+# Asking (``ask``): the card grows to this, its logo smaller at the top, the
+# question and its buttons under the name.
+ASK_WIDTH, ASK_HEIGHT = 480, 380
+ASK_LOGO, ASK_LOGO_TOP, ASK_TITLE_TOP, ASK_VERSION_TOP, ASK_BODY_TOP = 84, 22, 112, 146, 180
+ASK_MARGIN = 28
+_BUTTON = ("QPushButton {{ background: {bg}; color: {fg}; border: 1px solid {border}; border-radius: 5px;"
+           " padding: 7px 18px; font: 10pt 'Segoe UI'; }} QPushButton:hover {{ background: {hover}; }}"
+           " QPushButton:focus {{ border: 1px solid #ffffff; }}")
+
+
+def ask(text: str, buttons: list[str], detail: str = "") -> int | None:
+    """Ask on the loading card (it takes clicks meanwhile): ``text`` and a
+    faint ``detail`` under it, one button per entry of ``buttons``, the
+    first the main one (Enter). Returns the index pressed, or None when the
+    card isn't showing (the caller asks some other way)."""
+    from PySide6.QtGui import QRegion
+    from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout
+
+    splash = _splash
+    if splash is None:
+        return None
+    centre = splash.start.center()
+    card = QRectF(centre.x() - ASK_WIDTH / 2, centre.y() - ASK_HEIGHT / 2, ASK_WIDTH, ASK_HEIGHT)
+    kept = splash.start
+    splash.start = splash.end = card
+    splash.asking = True
+    panel = QWidget(splash)
+    panel.setGeometry(round(card.left()) + ASK_MARGIN, round(card.top()) + ASK_BODY_TOP,
+                      round(card.width()) - 2 * ASK_MARGIN, round(card.height()) - ASK_BODY_TOP - ASK_MARGIN)
+    rows = QVBoxLayout(panel)
+    rows.setContentsMargins(0, 0, 0, 0)
+    rows.setSpacing(10)
+    for words, colour, size in ((text, TEXT, 10), (detail, FAINT, 9)):
+        if not words:
+            continue
+        label = QLabel(words, panel)
+        label.setWordWrap(True)
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        label.setStyleSheet(f"color: {colour.name()}; font: {size}pt 'Segoe UI'; background: transparent;")
+        rows.addWidget(label)
+    rows.addStretch(1)
+    row = QHBoxLayout()
+    row.addStretch(1)
+    chosen: list[int] = []
+    loop = QEventLoop()
+    for i, words in enumerate(buttons):
+        button = QPushButton(words, panel)
+        main = i == 0
+        button.setStyleSheet(_BUTTON.format(bg=ACCENT.name() if main else "#2d2d2d", fg="#ffffff",
+                                            border=ACCENT.name() if main else BORDER.name(),
+                                            hover="#6aacff" if main else "#383838"))
+        button.setDefault(main)
+        button.setAutoDefault(True)
+        button.clicked.connect(lambda _=False, n=i: (chosen.append(n), loop.quit()))
+        row.addWidget(button)
+        if main:
+            first = button
+    row.addStretch(1)
+    rows.addLayout(row)
+    # Clicks reach the card (and only the card: the rest of the screen stays usable).
+    splash.setWindowFlag(Qt.WindowType.WindowTransparentForInput, False)
+    splash.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, False)
+    splash.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, False)
+    splash.setMask(QRegion(card.toAlignedRect()))
+    panel.show()
+    splash.show()
+    splash.raise_()
+    splash.activateWindow()
+    first.setFocus()
+    splash.update()
+    loop.exec()
+    panel.hide()
+    panel.deleteLater()
+    splash.clearMask()
+    splash.setWindowFlag(Qt.WindowType.WindowTransparentForInput, True)
+    splash.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+    splash.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+    splash.asking = False
+    splash.start = splash.end = kept
+    splash.show()
+    splash.repaint()
+    QApplication.processEvents()
+    return chosen[0] if chosen else None
 
 
 def _animate(duration: int, curve: QEasingCurve.Type, step, done=None) -> None:

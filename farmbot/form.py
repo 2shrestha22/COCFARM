@@ -69,6 +69,7 @@ FIELDS = [
     Field("bot.collect_every", "int", 1, 100),
     Field("bot.collect_loot_cart", "bool"),
     Field("bot.clear_gravestones", "bool"),
+    Field("bot.use_snacks", "bool"),
     Field("bot.collect_treasury", "bool"),
     Field("bot.read_village", "bool"),
     Field("bot.stop_when_full", "resources"),

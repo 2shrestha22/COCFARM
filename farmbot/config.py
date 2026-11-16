@@ -525,6 +525,9 @@ class BotConfig:
     collect_every: int = 7  # ...every N rounds (1 = each round); the first round after Start always collects
     collect_loot_cart: bool = True  # loot left over from defences, shown as a cart
     clear_gravestones: bool = True  # left by attackers' troops; tapping one clears them all
+    # Snacks and potions waiting in the box left of Build: each green "Use"
+    # one is used (farmbot/tasks/snacks.py). Off by default: they're spent.
+    use_snacks: bool = False
     # The Clan Castle's treasury (Clan War and Star Bonus loot): off by
     # default, since loot moved from it to the storages can be raided. Needs
     # a picture of your own castle's badge (Advanced → Pictures).
