@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import logging
 
+import cv2
+import numpy as np
+
 from farmbot.config import ClanConfig
 from farmbot.game import Game, T
 
@@ -38,7 +41,9 @@ def in_clan(game: Game, close: bool = True) -> bool | None:
 # ("10m") under the castle once a request is out (bot coordinates).
 REQUEST_AREA = [380, 850, 120, 60]  # [x, y, w, h]
 COOLDOWN_TEXT = [428, 880, 52, 26]
-MAX_COOLDOWN_MINUTES = 20  # the game's longest; a bigger number must be seconds ("45s")
+TIMER_FONT = "fonts/timer"  # the timer's digits, learned from the game (fonts/loot misreads 3 as 5)
+WAIT_OUT = 75  # s: a cooldown this short is waited out in the chat, then the request sent
+WAIT_LOOK = 5.0  # s between looks at the button while waiting it out
 
 
 def _open_chat(game: Game) -> bool:
@@ -63,22 +68,53 @@ def _close_chat(game: Game) -> None:
         game.wait(0.8)
 
 
-def request_cooldown(game: Game) -> float | None:
-    """Seconds until the Request button is free again, read from the timer
-    on it ("10m", or "45s" near the end); ``None`` if it can't be read."""
+def read_timer(game: Game) -> tuple[int, str] | None:
+    """The timer on the Request button: its number and unit ("10m" is
+    (10, "m"), "45s" is (45, "s")); ``None`` if there's none or it can't
+    be read. The unit is told by its shape: lower case, so shorter than the
+    digits; an "m" is wider than tall, an "s" isn't."""
     from farmbot import text
 
-    font = game.vision.font(T.LOOT_FONT)
+    try:
+        font = game.vision.font(TIMER_FONT)
+    except (FileNotFoundError, ValueError):
+        font = game.vision.font(T.LOOT_FONT)
+    found = text.pieces(game._current(), game.region(COOLDOWN_TEXT))
+    if not found:
+        return None
+    masks = [mask for _, mask in found]
+    if len(masks) < 2:
+        return None
+    *numbers, letter = masks  # the unit ends it
+    h, w = letter.shape[:2]
+    if h >= max(m.shape[0] for m in numbers):
+        return None  # no unit after the number: not the timer
     digits = ""
-    for _, mask in text.pieces(game._current(), game.region(COOLDOWN_TEXT)):
+    for mask in numbers:
         char, score = font.classify(mask)
         if score < 0.45 or not char.isdigit():
-            break  # the unit after the number ("m" or "s")
+            return None
         digits += char
-    value = int(digits) if digits else 0
-    if not value:
+    if not int(digits):
         return None
-    return float(value) * 60 if value <= MAX_COOLDOWN_MINUTES else float(value)
+    return int(digits), "m" if w > h else "s"
+
+
+def request_cooldown(game: Game) -> float | None:
+    """Seconds until the Request button is free again at most, read from
+    the timer on it ("10m": 9 to 10 minutes; "45s"); ``None`` if it can't
+    be read."""
+    timer = read_timer(game)
+    if timer is None:
+        return None
+    value, unit = timer
+    return float(value) * 60 if unit == "m" else float(value)
+
+
+def soonest(wait: float) -> float:
+    """The least a cooldown read as ``wait`` s can be: the game rounds
+    minutes up ("10m" right after a request, "1m" with a few seconds left)."""
+    return max(wait - 60, 0.0) if wait >= 60 and wait % 60 == 0 else wait
 
 
 def request_troops(game: Game, cfg: ClanConfig, close: bool = True) -> tuple[bool, float | None]:
@@ -97,31 +133,87 @@ def request_troops(game: Game, cfg: ClanConfig, close: bool = True) -> tuple[boo
         log.info("Not in a clan: can't request troops")
         _close_chat(game)
         return False, None
-    sent = False
-    if game.click(T.REQUEST, region=game.region(REQUEST_AREA)):
-        if game.click_when_visible(T.REQUEST_SEND, timeout=4):
-            sent = True
-            log.info("Requested Clan Castle troops")
-            game.wait(2.0)
+    sent = _send_request(game)
+    wait = None if sent else request_cooldown(game)
+    if not sent and wait is not None and wait <= WAIT_OUT:
+        # About to be free: wait for it here rather than a whole round more.
+        log.info("The request is free in %d s at most: waiting for it", wait)
+        deadline = game.clock() + wait + WAIT_LOOK
+        while not sent and game.clock() < deadline:
+            game.wait(WAIT_LOOK, exact=True)
             game.refresh()
-        else:
-            log.info("The request window didn't show its Send button")
+            sent = _send_request(game)
+        wait = None if sent else request_cooldown(game)
+    if sent:
+        # The new timer, once it reads the same twice (as it shows, the
+        # "request sent" banner can make the first look wrong).
+        last = None
+        for _ in range(6):
+            game.wait(0.6, exact=True)
             game.refresh()
-            game.click(T.CLOSE)
-    wait = request_cooldown(game)
-    if not sent:
+            wait = request_cooldown(game)
+            if wait is not None and wait == last:
+                break
+            last = wait
+        log.info("The next request in %s", f"{wait / 60:.0f} min at most" if wait else "an unknown time")
+    else:
         log.info("Request is on cooldown%s", f" for {wait / 60:.0f} more min" if wait else "")
     if close:
         _close_chat(game)
     return sent, wait
 
 
+def _send_request(game: Game) -> bool:
+    """Request (when free: on cooldown it shows a gem price and isn't the
+    button's picture) → Send."""
+    if not game.click(T.REQUEST, region=game.region(REQUEST_AREA)):
+        return False
+    if game.click_when_visible(T.REQUEST_SEND, timeout=4):
+        log.info("Requested Clan Castle troops")
+        return True
+    log.info("The request window didn't show its Send button")
+    game.refresh()
+    game.click(T.CLOSE)
+    return False
+
+
 CHAT_CLOSE_SPOT = (250, 150)  # a tap here, on the chat, closes the donate window
+MAX_OPENS = 12  # donate windows opened in one visit at most
+# A request's bubble, from its Donate button: who asks, what for, and its
+# room ("35/45"...). It tells requests apart wherever the chat has moved
+# them (a request filling up, or a new message, moves the others).
+BUBBLE = (-370, -150, 330, 166)  # x, y, w, h from the button's centre
+SAME_BUBBLE = 0.0005  # share of a bubble's pixels changed (by SAME_GREY) below which it's the same request (another name alone changes more)
+SAME_GREY = 40
+SAME_PLACE = 12  # px: a Donate button this close to where it was is the same one (a message moves it further)
+
+
+def bubble(screen: np.ndarray, point: tuple[int, int]) -> np.ndarray:
+    x, y, w, h = BUBBLE
+    x0, y0 = max(0, point[0] + x), max(0, point[1] + y)
+    return cv2.cvtColor(screen[y0:point[1] + y + h, x0:point[0] + x + w], cv2.COLOR_BGR2GRAY)
+
+
+def same_bubble(a: np.ndarray, b: np.ndarray) -> bool:
+    if a.shape != b.shape or not a.size:
+        return False
+    return float((np.abs(a.astype(np.int16) - b.astype(np.int16)) >= SAME_GREY).mean()) < SAME_BUBBLE
+
+
+def _close_window(game: Game) -> None:
+    """Close the donate window (a tap on the chat), looking until it's gone."""
+    game.tap(*CHAT_CLOSE_SPOT)
+    for _ in range(8):
+        game.wait(0.15, exact=True)
+        game.refresh()
+        if game.find(T.DONATE_WINDOW) is None:
+            return
 
 
 def donate(game: Game, cfg: ClanConfig, close: bool = True) -> int:
-    """Fill the open requests in clan chat: the main units first, then the
-    biggest that fit (see farmbot/tasks/donate.py). Returns units given."""
+    """Fill every open request in clan chat, the ones that come in
+    meanwhile too: the main units first, then the biggest that fit (see
+    farmbot/tasks/donate.py). Returns units given."""
     from farmbot.tasks.donate import donate_open_window
 
     missing = _missing(game, (T.OPEN_CHAT, T.CLOSE_CHAT, T.DONATE, T.DONATE_WINDOW))
@@ -134,26 +226,31 @@ def donate(game: Game, cfg: ClanConfig, close: bool = True) -> int:
     if not _open_chat(game):
         return 0
     donated = done = 0
-    seen: list[int] = []  # requests already handled, by height in the chat
-    for _ in range(10):
+    handled: list[np.ndarray] = []  # the bubbles of requests done with, as they look now
+    for _ in range(MAX_OPENS):
+        chat = game.refresh()  # the requests' bubbles, before a window covers them
         requests = [m for m in sorted(game.find_all(T.DONATE), key=lambda m: m.y)
-                    if all(abs(m.y - y) > 30 for y in seen)]
+                    if not any(same_bubble(bubble(chat, m.point), b) for b in handled)]
         if not requests:
             break
         request = requests[0]
-        seen.append(request.y)
-        chat = game.screen  # the request's bubble, before the window covers it
+        handled.append(bubble(chat, request.point))
         game.tap_match(request)
-        if not game.wait_for(T.DONATE_WINDOW, timeout=3):
+        game.screen = None
+        if not game.wait_for(T.DONATE_WINDOW, timeout=3, interval=0.2):
             continue
-        game.wait(0.5)
         given = donate_open_window(game, cfg, chat, request.point)
         donated += given
         done += given > 0
         if game.find(T.DONATE_WINDOW):
-            game.tap(*CHAT_CLOSE_SPOT)
-            game.wait(0.8)
-        game.refresh()
+            _close_window(game)
+        # As it looks now (fuller), if it's still where it was (the chat
+        # didn't move): not opened again unless it changes. (One that moved
+        # is opened again, gives nothing more, and is known by then.)
+        after = game.refresh()
+        still = [m for m in game.find_all(T.DONATE) if abs(m.y - request.y) <= SAME_PLACE]
+        if still:
+            handled.append(bubble(after, still[0].point))
     if close:
         _close_chat(game)
     if donated:

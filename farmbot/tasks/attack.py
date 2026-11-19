@@ -26,7 +26,9 @@ log = logging.getLogger(__name__)
 def deploy_edges(game: Game, cfg: Config, war_map: bool = False) -> tuple[dict[str, list[Point]], Point | None]:
     """Points to drop troops on, per attacked side, and the base centre.
 
-    Tries the red line, then the ring around the building area, and fills
+    Tries the red line, then the ring around the building area (by its
+    grass or its cluster of buildings, then, on busy scenery, the busy blob
+    round the middle: :func:`deployzone.detect_busy`), and fills
     any side still empty from the fixed ``deploy_lines``. ``war_map``: a
     clan war base, whose ground ends at the line (rock and lava beyond
     it): the line isn't judged by the ground around it there. Where each
@@ -42,6 +44,8 @@ def deploy_edges(game: Game, cfg: Config, war_map: bool = False) -> tuple[dict[s
     detectors = (
         ("red line", cfg.redline.enabled, lambda: rl.detect(screen, cfg.redline), cfg.redline.min_side_points),
         ("building ring", cfg.zone.enabled, lambda: deployzone.detect(screen, cfg.zone), 1),
+        # busy scenery round the map: the ring round the base's clutter, cut loose from it
+        ("building ring", cfg.zone.enabled, lambda: deployzone.detect_busy(screen, cfg.zone), 1),
     )
     def take(name, result, minimum, on):
         nonlocal center
@@ -135,7 +139,12 @@ def button_row_top(game: Game) -> int | None:
 
 POINT_MAX_BLOCKED = 0.5  # a red-line point with more non-ground around it is dropped
 SIDE_MAX_BLOCKED = 0.2  # and a side whose points typically have more is not trusted
-GROUND_UNKNOWN = 0.8  # share of the screen that is not grass or dirt above which the check is skipped
+TEXTURE_SIDE_MAX = 0.2  # with no grass to judge by: a side whose points are typically busier with edges is a wall's
+# Grass in shade (the skull jungle's forest) reads partly as non-ground: a
+# side just over SIDE_MAX_BLOCKED is still trusted where its points sit on
+# plain ground, hardly any edges round them.
+SHADED_SIDE_MAX = 0.35
+PLAIN_SIDE_MAX = 0.1
 
 
 def on_open_ground(screen, points: list[Point], cfg: Config, blocked=None, rims: bool = False) -> list[Point]:
@@ -145,17 +154,35 @@ def on_open_ground(screen, points: list[Point], cfg: Config, blocked=None, rims:
     ``blocked``: the screen's ``deployzone.open_ground``, if already made.
     ``rims``: a line found along the rims of ground of its colour
     (``RedLine.rims``): wall edges inside a base can look like that too,
-    so with no ground to judge by (city scenery, say) it isn't used."""
+    so with no grass to judge by it isn't used.
+
+    With hardly any grass or dirt on screen (a city's paving, a stone
+    floor, snow, ice) the ground's colour tells nothing; there a point is
+    judged by how busy with edges it is round about instead
+    (:func:`deployzone.texture`): the line runs over plain ground, a
+    (golden) wall's edge through a clutter of buildings. Texture also
+    rescues a side on grass in shade, just over the grass limit
+    (``SHADED_SIDE_MAX``), whose points are plain round about."""
     if not points:
         return points
     if blocked is None:
         blocked = deployzone.open_ground(screen, cfg.zone)
-    if float(blocked.mean()) > GROUND_UNKNOWN:
-        return [] if rims else points  # hardly any grass or dirt (snow, desert themes): can't judge
+    most, side_most = POINT_MAX_BLOCKED, SIDE_MAX_BLOCKED
+    if deployzone.unknown_ground(blocked):
+        if rims:
+            return []
+        blocked, most, side_most = deployzone.texture(screen), deployzone.TEXTURE_BUSY, TEXTURE_SIDE_MAX
     shares = [float(blocked[y, x]) for x, y in points]
-    kept = [p for p, b in zip(points, shares) if b <= POINT_MAX_BLOCKED]
-    if not kept or sorted(b for b in shares if b <= POINT_MAX_BLOCKED)[len(kept) // 2] > SIDE_MAX_BLOCKED:
+    kept = [p for p, b in zip(points, shares) if b <= most]
+    if not kept:
         return []
+    typical = sorted(b for b in shares if b <= most)[len(kept) // 2]
+    if typical > side_most:
+        if side_most != SIDE_MAX_BLOCKED or typical > SHADED_SIDE_MAX:
+            return []
+        busy = deployzone.texture(screen)
+        if sorted(float(busy[y, x]) for x, y in kept)[len(kept) // 2] > PLAIN_SIDE_MAX:
+            return []
     return kept
 
 
@@ -346,48 +373,278 @@ def cycle_points(edges: dict[str, list[Point]], sides: list[str], rng=None,
     return DeployPoints(edges, sides, rng, human_like, spare)
 
 
-def spell_points(edges: dict[str, list[Point]], center: Point | None, reach: float) -> Iterator[Point]:
-    """Points part-way from the centre towards the edge, i.e. over the base."""
+GOLDEN_ANGLE = math.pi * (3 - math.sqrt(5))  # each spread spell this far round from the last: evenly round, any count
+SPREAD_JITTER = 0.15  # spread spells: this share in or out of the reach, and of a radian round, at random
+RING_GAP = math.radians(15)  # no deploy point this near a direction (cut off by the buttons): the ring's ellipse there
+
+
+def _ring(edges: dict[str, list[Point]], center: Point | None):
+    """The base's centre and a function giving, for a direction (in the
+    base's own proportions: radians round an ellipse), the point of the
+    deploy ring that way."""
     every = [p for pts in edges.values() for p in pts]
     cx, cy = center or base_center(edges)
-    return itertools.cycle([(round(cx + (x - cx) * reach), round(cy + (y - cy) * reach)) for x, y in every])
+    rx = max(max(abs(x - cx) for x, _ in every), 1)
+    ry = max(max(abs(y - cy) for _, y in every), 1)
+    angles = [(math.atan2((y - cy) / ry, (x - cx) / rx), (x, y)) for x, y in every]
+
+    def toward(angle: float) -> tuple[float, float]:
+        def off(a: float) -> float:
+            return abs((a - angle + math.pi) % math.tau - math.pi)
+
+        gap, point = min(((off(a), p) for a, p in angles), key=lambda t: t[0])
+        if gap > RING_GAP:
+            return cx + rx * math.cos(angle), cy + ry * math.sin(angle)
+        return point
+
+    return (cx, cy), toward, min(rx, ry)
 
 
-SPOT_REACH = 0.33  # random spell spot: this share of the way from the centre to the deploy ring, at most
+def spell_points(edges: dict[str, list[Point]], center: Point | None, reach: float, rng=None) -> Iterator[Point]:
+    """Spread spells: points ``reach`` of the way from the centre to the
+    deploy ring, evenly round the centre (each one a golden angle on from
+    the last, from a random start), a little in or out at random. However
+    many spells there are, they go all round the base, not in a row."""
+    (cx, cy), toward, _ = _ring(edges, center)
+    start = rng.random() * math.tau if rng is not None else 0.0
+    for k in itertools.count():
+        angle, out = start + k * GOLDEN_ANGLE, reach
+        if rng is not None:
+            angle += rng.uniform(-SPREAD_JITTER, SPREAD_JITTER)
+            out *= 1 + rng.uniform(-SPREAD_JITTER, SPREAD_JITTER)
+        x, y = toward(angle)
+        yield round(cx + (x - cx) * out), round(cy + (y - cy) * out)
 
 
-def spell_spot(edges: dict[str, list[Point]], center: Point | None, how: str, rng) -> Point:
+SPOT_REACH = 0.4  # random spell spot: this share of the way from the centre to the deploy ring, at most (the middle half)
+SPOT_MOVE = 0.5  # a random spot is at least this share of SPOT_REACH from the last battle's
+SPOT_TRIES = 30
+
+
+def spell_spot(edges: dict[str, list[Point]], center: Point | None, how: str, rng,
+               last: Point | None = None) -> Point:
     """The one spot for spells cast together: the middle of the base, or a
-    random spot within its middle half. The deploy ring lies outside the
-    walls, so "half the base" is about a third of the way out to it: the
-    spot stays well inside the walls, never out at an edge or corner."""
-    cx, cy = center or base_center(edges)
+    random spot within its middle half, a new one each battle (well away
+    from ``last``, the last battle's). The deploy ring lies outside the
+    walls, so "half the base" is under half the way out to it."""
+    (cx, cy), toward, near = _ring(edges, center)
     if how != "random":
-        return cx, cy
-    every = [p for pts in edges.values() for p in pts]
-    x, y = rng.choice(every)
-    reach = SPOT_REACH * math.sqrt(rng.random())  # sqrt: spread evenly over the area, not bunched at the centre
-    return round(cx + (x - cx) * reach), round(cy + (y - cy) * reach)
+        return round(cx), round(cy)
+    spot = (round(cx), round(cy))
+    for _ in range(SPOT_TRIES):
+        x, y = toward(rng.random() * math.tau)
+        reach = SPOT_REACH * math.sqrt(rng.random())  # sqrt: spread evenly over the area, not bunched at the centre
+        spot = round(cx + (x - cx) * reach), round(cy + (y - cy) * reach)
+        if last is None or math.dist(spot, last) >= SPOT_MOVE * SPOT_REACH * near:
+            break
+    return spot
+
+
+def spell_aim(edges: dict[str, list[Point]], center: Point | None, focus: list[str] | None, acfg, rng,
+              last: Point | None = None) -> Point:
+    """The spells' one spot this battle. Fought for stars, they follow the
+    push (``focus``: its sides): its spot, or with "random" somewhere
+    round it, new each battle. Else :func:`spell_spot`."""
+    if not focus:
+        return spell_spot(edges, center, acfg.spell_spot, rng, last)
+    px, py = plan.push_spot(edges, center, focus, acfg.star_spell_depth)
+    if acfg.spell_spot != "random":
+        return px, py
+    _, _, near = _ring(edges, center)
+    spot = (px, py)
+    for _ in range(SPOT_TRIES):
+        angle, reach = rng.random() * math.tau, SPOT_REACH * near * 0.5 * math.sqrt(rng.random())
+        spot = round(px + reach * math.cos(angle)), round(py + reach * math.sin(angle))
+        if last is None or math.dist(spot, last) >= SPOT_MOVE * SPOT_REACH * near * 0.25:
+            break
+    return spot
+
+
+def _cards_like(game: Game, spells: list[Card], name: str) -> list[Card] | None:
+    """The cards of ``spells`` that show the picture ``name`` (None: there's no such picture)."""
+    if not game.vision.library.has(name):
+        return None
+    [(_, picture)] = game.vision.library.get(name)[:1]
+    screen = game.refresh()
+    return [c for c in spells if armybar.card_is(screen, c, picture)]
 
 
 def spells_to_cast(game: Game, spells: list[Card], cfg: Config) -> list[Card]:
-    """The spell cards to use: all of them, or only the Bat Spells."""
+    """The spell cards to use: all of them, only the Bat Spells, or the
+    Bat Spells and Earthquakes (see :func:`quake_cards` for which those are)."""
     if cfg.attack.spells == "all" or not spells:
         return spells
-    if not game.vision.library.has(T.BAT_SPELL_CARD):
-        log.warning("No Bat Spell picture (%s.png): casting no spells", T.BAT_SPELL_CARD)
-        return []
-    [(_, picture)] = game.vision.library.get(T.BAT_SPELL_CARD)[:1]
+    bats = _cards_like(game, spells, T.BAT_SPELL_CARD)
+    if bats is None:
+        log.warning("No Bat Spell picture (%s.png): casting no Bat Spells", T.BAT_SPELL_CARD)
+        bats = []
+    quakes = quake_cards(game, spells) if cfg.attack.spells == "earthquake" else []
+    if cfg.attack.spells == "earthquake" and not game.vision.library.has(T.EARTHQUAKE_SPELL_CARD):
+        log.warning("No Earthquake Spell picture (%s.png): casting no Earthquakes", T.EARTHQUAKE_SPELL_CARD)
+    chosen = [c for c in spells if c in bats or c in quakes]
+    if len(chosen) < len(spells):
+        log.info("Casting %d Bat Spell card(s)%s; leaving %d other spell card(s)", len([c for c in chosen if c in bats]),
+                 f" and {len(quakes)} Earthquake card(s)" if quakes else "", len(spells) - len(chosen))
+    return chosen
+
+
+def quake_cards(game: Game, spells: list[Card]) -> list[Card]:
+    """The Earthquake Spell cards among ``spells`` (none without their picture)."""
+    return (_cards_like(game, spells, T.EARTHQUAKE_SPELL_CARD) or []) if spells else []
+
+
+QUAKE_SPOTS = 5  # Earthquake spots at most: a card whose count isn't read stops there
+
+
+def quake_spots(first: Point, edges: dict[str, list[Point]], center: Point | None, rng) -> Iterator[Point]:
+    """Where Earthquakes go, a few at a time: the spells' spot first, then
+    new random spots in the middle half, each well away from the last."""
+    spot = first
+    while True:
+        yield spot
+        spot = spell_spot(edges, center, "random", rng, spot)
+
+
+def cast_quakes(game: Game, card: Card, spots: Iterator[Point], count: int | None, cfg: Config) -> None:
+    """The Earthquakes on ``card``, ``quakes_per_spot`` on a spot, then the
+    next ones on the next spot, until the card's spent. Fewer than that left
+    over go on the last spot with the others: too few alone to open a wall."""
+    per = cfg.attack.quakes_per_spot
+    left = count
+    groups = QUAKE_SPOTS if count is None else max(1, count // per)
+    for group in range(groups):
+        spot = next(spots)
+        taps = per if left is None else (left if group == groups - 1 else min(per, left))
+        log.info("Earthquakes: %d on %s", taps, spot)
+        game.tap(*card.center)
+        _wait(game, cfg, 0.1, SETTLE)
+        game.tap_many([spot] * taps, jitter=3, pause=SPELL_GAP if _rhythm(cfg) else 0.0)
+        _wait(game, cfg, 0.3, SETTLE)
+        if left is not None:
+            left -= taps
+        if (left is not None and left <= 0) or armybar.is_spent(game.refresh(), card, cfg.bar):
+            return
+
+
+# Earthquakes on the troops' way in ("path"): each spot this share of the way
+# from the stretch the troops go down on to the base's centre. The deploy
+# line lies a little outside the walls: the first opens the outer walls in
+# front of them, the next the walls round the core.
+QUAKE_DEPTHS = (0.3, 0.55, 0.8)
+
+
+def path_spots(edges: dict[str, list[Point]], center: Point | None, sides: list[str]) -> Iterator[Point]:
+    """Where Earthquakes go on the troops' way in from ``sides`` (their
+    stretches in ``edges``): the outer walls in front of them first, then
+    deeper toward the core; any more spots on the deepest."""
+    for depth in itertools.chain(QUAKE_DEPTHS, itertools.repeat(QUAKE_DEPTHS[-1])):
+        yield plan.push_spot(edges, center, sides, depth)
+
+
+def quake_front(edges: dict[str, list[Point]], troop_edges: dict[str, list[Point]], center: Point | None,
+                sides: list[str], push: list[str] | None, origins: dict[str, str], rng, width: int
+                ) -> tuple[list[str], dict[str, list[Point]]]:
+    """Where the troops go in behind the Earthquakes: the push's sides when
+    fought for stars, else one side (the widest found on the base itself; the
+    one with the most points if none was), and on each only its stretch
+    facing the quakes' line, so the whole army goes through the opening
+    together. Returns those sides and the troops' points with the stretches."""
+    have = [s for s in sides if troop_edges.get(s)]
+    if not have:
+        return sides, troop_edges
+    entry = [s for s in push or [] if s in have]
+    if not entry:
+        entry = plan.focus_sides(troop_edges, origins, have, "side", rng) or [
+            max(have, key=lambda s: len(troop_edges[s]))]
+    at = plan.push_spot(troop_edges, center, entry, 0.0)  # the middle of the entry's points
+    return entry, {**troop_edges, **{s: lootspots.front(troop_edges[s], at, width) for s in entry}}
+
+
+FUNNEL_REACH = 1.6  # a funnel's two ends: this many FRONT_REACHes either way of the middle of the way in
+FUNNEL_TROOPS = 2  # funnel "troops": this many units of the first troop card at each end
+FUNNEL_WAIT = 6.0  # s for the funnel to clear the outside before the main army goes in
+
+
+def funnel_ends(edges: dict[str, list[Point]], sides: list[str], at: Point, width: int) -> tuple[Point, Point] | None:
+    """The two ends of a funnel round ``at`` (the middle of the way in), on
+    the deploy points of ``sides`` (their whole length): the point nearest
+    FUNNEL_REACH away on one side of it, then the one nearest that far on the
+    other (well away from the first). None without points both ways."""
+    points = [p for s in sides for p in edges.get(s, [])]
+    if not points:
+        return None
+    reach = lootspots.scaled(lootspots.FRONT_REACH * FUNNEL_REACH, width)
+    first = min(points, key=lambda p: abs(math.dist(p, at) - reach))
+    other = [p for p in points if math.dist(p, first) >= reach]
+    if not other:
+        return None
+    second = min(other, key=lambda p: abs(math.dist(p, at) - reach))
+    return first, second
+
+
+def warden_card(game: Game, singles: list[Card]) -> Card | None:
+    """The Grand Warden's card among ``singles`` (by his picture), if known."""
+    if not singles or not game.vision.library.has(T.WARDEN_CARD):
+        return None
+    pictures = [picture for _, picture in game.vision.library.get(T.WARDEN_CARD)]
     screen = game.refresh()
-    bats = [c for c in spells if armybar.card_is(screen, c, picture)]
-    if len(bats) < len(spells):
-        log.info("Casting %d Bat Spell card(s); leaving %d other spell card(s)", len(bats), len(spells) - len(bats))
-    return bats
+    return next((c for c in singles if any(armybar.card_is(screen, c, p) for p in pictures)), None)
+
+
+def open_funnel(game: Game, cfg: Config, ends: tuple[Point, Point], troops: list[Card], singles: list[Card],
+                counts: dict[Card, int | None], fallback: Iterator[Point]) -> list[Card]:
+    """Before the main army: a few units at each end of the way in, to clear
+    the buildings outside it, so the army behind them walks straight in
+    rather than round the base. "troops": FUNNEL_TROOPS of the first troop
+    card at each end (taken off its count); "heroes": every hero but the
+    Grand Warden (he stays with the main army), shared between the ends.
+    Then FUNNEL_WAIT s for them to get at it. Returns the heroes that went."""
+    how = cfg.attack.funnel
+    went: list[Card] = []
+    if how == "heroes":
+        warden = warden_card(game, singles)
+        heroes = [c for c in singles if c.kind == "single" and c is not warden]
+        if heroes:
+            log.info("Funnel: %d hero(es) at the ends of the way in, %s and %s%s", len(heroes), ends[0], ends[1],
+                     "; the Grand Warden stays with the army" if warden else "")
+            went = place_singles(game, heroes, itertools.cycle(ends), cfg, fallback)
+    elif how == "troops" and troops:
+        card = troops[0]
+        log.info("Funnel: %d troop(s) at each end of the way in, %s and %s", FUNNEL_TROOPS, ends[0], ends[1])
+        deploy_taps(game, card, iter([ends[0]] * FUNNEL_TROOPS + [ends[1]] * FUNNEL_TROOPS), 2 * FUNNEL_TROOPS, cfg)
+        if counts.get(card):
+            counts[card] = max(counts[card] - 2 * FUNNEL_TROOPS, 0)
+        went = [card]
+    if went:
+        _wait(game, cfg, FUNNEL_WAIT, SETTLE)
+    return [c for c in went if c.kind == "single"]
+
+
+def quakes_ready(game: Game, cfg: Config) -> bool:
+    """Earthquakes to cast first, on the troops' way in: chosen, on show on
+    the bar's first screenful (a bar that scrolls shows its spells last), and
+    enough to open a wall (``quakes_per_spot``; a count not read is taken as
+    enough)."""
+    acfg = cfg.attack
+    if acfg.spells not in ("earthquake", "all") or acfg.quake_aim != "path":
+        return False
+    quakes = quake_cards(game, [c for c in _bar_cards(game, cfg) if c.kind == "spell"])
+    if not quakes:
+        log.info("Earthquakes: none on show at the start (or none brought): the troops go in as usual")
+        return False
+    counts = [read_count(game, c, cfg) for c in quakes]
+    if None not in counts and sum(counts) < acfg.quakes_per_spot:
+        log.info("Earthquakes: only %d, too few to open a wall: the troops go in as usual", sum(counts))
+        return False
+    return True
 
 
 def base_center(edges: dict[str, list[Point]]) -> Point:
+    """The middle of the deploy points' extent (not their average: a side
+    found with more points than another would pull that towards it)."""
     every = [p for pts in edges.values() for p in pts]
-    return sum(p[0] for p in every) // len(every), sum(p[1] for p in every) // len(every)
+    xs, ys = [x for x, _ in every], [y for _, y in every]
+    return (min(xs) + max(xs)) // 2, (min(ys) + max(ys)) // 2
 
 
 SPELL_BURST = 11  # taps in one go when a spell card's count can't be read
@@ -655,11 +912,13 @@ HERO_GAP = 0.35  # ...and between one hero and the next (else 0.08 s)
 
 def place_singles(game: Game, cards: list[Card], points: Iterator[Point], cfg: Config,
                   fallback: Iterator[Point] | None = None,
-                  own: dict[Card, Iterator[Point]] | None = None) -> list[Card]:
+                  own: dict[Card, Iterator[Point]] | None = None,
+                  tapped: dict[int, float] | None = None) -> list[Card]:
     """Put every hero and siege machine down in one quick pass (card, point,
     next card...), then check them all on one screenshot; any the game
     refused get another point. ``own``: points for some cards alone (the
-    Warden's, where most troops went). Returns the cards that went out."""
+    Warden's, where most troops went). ``tapped``: filled with when each
+    card (by id) last went onto the field. Returns the cards that went out."""
     own = own or {}
     before = game.refresh()
     placed: list[Card] = []
@@ -678,6 +937,8 @@ def place_singles(game: Game, cards: list[Card], points: Iterator[Point], cfg: C
             game.tap(*card.center)
             _wait(game, cfg, 0.08, SETTLE)
             game.tap(*next(source), jitter=3)
+            if tapped is not None:
+                tapped[id(card)] = game.clock()
             _beat(game, cfg, HERO_GAP, plain=0.08)
         _wait(game, cfg, 0.5, SETTLE)
         after = game.refresh()
@@ -791,7 +1052,8 @@ def finish_battle(game: Game, cfg: Config, target: Loot | None = None,
             reason = ("the storages are full" if full else
                       "%d%% of the loot taken" % (share * 100) if enough else
                       "no loot gained for %ds" % no_loot if stalled else "time limit")
-            log.info("Ending battle: %s", reason)
+            log.info("Ending battle: %s%s", reason,
+                     " (to keep attacking, turn off Attacking → End battle when storages are full)" if full else "")
             if stalled:
                 game.note("end_spread", human.end_wait_extra(acfg.no_loot_seconds), no_loot - acfg.no_loot_seconds)
             if not can_return:
@@ -1229,18 +1491,35 @@ def attack(game: Game, cfg: Config, target: Loot | None = None, room: dict[str, 
         sides = human.fewer_sides(game.rng, [s for s in acfg.sides if edges.get(s)]) or acfg.sides
         if len(sides) < len(acfg.sides):
             log.info("This battle goes in from the %s side%s", " and ".join(sides), "" if len(sides) == 1 else "s")
+    quakes_first = quakes_ready(game, cfg)  # Earthquakes open the way, and the troops go in through it
+    if quakes_first:
+        sides, troop_edges = quake_front(edges, troop_edges, center, sides, focus, game.deploy_origins,
+                                         game.rng, game.size[0])
+        log.info("Earthquakes first, on the walls in from the %s side; the army goes in behind them",
+                 " and ".join(sides))
+    from farmbot.tasks import walk as hero_walk
+
+    walking = hero_walk.ready(game, cfg)  # a Queen or Champion walk opens the battle: the army follows her in
+    if walking and not quakes_first:
+        sides, troop_edges = quake_front(edges, troop_edges, center, sides, focus, game.deploy_origins,
+                                         game.rng, game.size[0])
+    if walking:
+        log.info("%s walk from the %s side; the army follows her in", hero_walk.NAMES[acfg.hero_walk], sides[0])
+    ends = (funnel_ends(edges, sides, plan.push_spot(troop_edges, center, sides, 0.0), game.size[0])
+            if quakes_first and acfg.funnel != "off" else None)  # (where the funnel opens the way in)
     spare = [s for s in acfg.sides if s not in sides]  # brought in if the ones picked are refused
     edge_points = cycle_points(troop_edges, sides, game.rng, _rhythm(cfg), spare)
     fixed_points = cycle_points(fixed_lines(game.size[0], cfg), sides, game.rng, _rhythm(cfg), spare)
     edge_points.war_map = fixed_points.war_map = war_map
     def aim() -> Point:
-        """The spells' one spot: following the push when there is one."""
-        if focus:
-            return plan.push_spot(edges, center, focus, acfg.star_spell_depth)
-        return spell_spot(edges, center, acfg.spell_spot, game.rng)
+        """The spells' one spot: following the push when there is one; a new one each battle."""
+        game.spell_spot = spell_aim(edges, center, focus, acfg, game.rng, getattr(game, "spell_spot", None))
+        return game.spell_spot
 
-    over_base = spell_points(edges, center, acfg.spell_reach)
+    over_base = spell_points(edges, center, acfg.spell_reach, game.rng)
     spot = aim()
+    quake_at = (path_spots(troop_edges, center, sides) if quakes_first  # (Earthquakes: on the way in,
+                else quake_spots(spot, edges, center, game.rng))  # or the spells' spot, then others)
     if acfg.spell_placement == "together":
         log.info("Spells go on %s (%s)", spot, "following the push" if focus else acfg.spell_spot)
     spells_held = 0.0  # s the spells waited for the push (once, not again on each screenful)
@@ -1252,7 +1531,7 @@ def attack(game: Game, cfg: Config, target: Loot | None = None, room: dict[str, 
         this battle, pinch out for real. A view that moves was zoomed in
         (the points were measured on it, and sat inside the base): the
         deploy points are found again on the zoomed-out one."""
-        nonlocal edges, center, edge_points, fixed_points, over_base, spot, rescued, troop_edges, sides, spare
+        nonlocal edges, center, edge_points, fixed_points, over_base, spot, rescued, troop_edges, sides, spare, quake_at
         if rescued or edge_points.seen_land or fixed_points.seen_land:
             return None
         rescued = True
@@ -1271,11 +1550,17 @@ def attack(game: Game, cfg: Config, target: Loot | None = None, room: dict[str, 
             else:
                 sides = list(acfg.sides)
             spare = [s for s in acfg.sides if s not in sides]
+        if quakes_first or walking:
+            sides, troop_edges = quake_front(edges, troop_edges, center, sides, focus, game.deploy_origins,
+                                             game.rng, game.size[0])
+            spare = [s for s in acfg.sides if s not in sides]
         edge_points = cycle_points(troop_edges, sides, game.rng, _rhythm(cfg), spare)
         fixed_points = cycle_points(fixed_lines(game.size[0], cfg), sides, game.rng, _rhythm(cfg), spare)
         edge_points.war_map = fixed_points.war_map = war_map
-        over_base = spell_points(edges, center, acfg.spell_reach)
+        over_base = spell_points(edges, center, acfg.spell_reach, game.rng)
         spot = aim()
+        quake_at = path_spots(troop_edges, center, sides) if quakes_first else quake_spots(spot, edges, center,
+                                                                                         game.rng)
         return edge_points, fixed_points
 
     if focus and read.lure is not None:
@@ -1304,9 +1589,33 @@ def attack(game: Game, cfg: Config, target: Loot | None = None, room: dict[str, 
         troops = [c for c in cards if c.kind == "troop"]
         singles = [c for c in cards if c.kind in ("single", "siege") and not _out_already(game.screen, c)]
         spells = spells_to_cast(game, [c for c in cards if c.kind == "spell"], cfg)
+        quakes = quake_cards(game, spells) if acfg.spells in ("earthquake", "all") else []
+
+        if quakes_first and quakes and page == 0:
+            # Before anyone goes down: the walls are open when the troops get there.
+            for card in quakes:
+                cast_quakes(game, card, quake_at, counts.get(card), cfg)
+            spells = [c for c in spells if c not in quakes]
+            _beat(game, cfg, SPELL_BEAT)
+
+        walked: list[Card] = []  # the walker: out already, her ability still to fire (if it didn't on the walk)
+        if walking and page == 0:
+            went = hero_walk.walk(game, cfg, singles, troops, [c for c in cards if c.kind == "spell"], counts,
+                                  troop_edges, sides, fixed_points)
+            if went is not None:
+                singles = [c for c in singles if c is not went.hero]
+                troops = [c for c in troops if c not in went.healers]
+                spells = [c for c in spells if c not in went.invisibility]
+                walked = [] if went.fired else [went.hero]
+                singles_seen += 1
+                placed_total += went.fired  # (one still to fire is counted with the others, in ``here``)
 
         here: list[Card] = []
-        if lead and singles:
+        if ends and page == 0:
+            here = open_funnel(game, cfg, ends, troops, singles, counts, edge_points)
+            if here:
+                led_at = game.clock()
+        if lead and singles and not here:  # (heroes that opened a funnel led already: the Warden stays with the army)
             log.info("Ground army: the heroes and siege go first, to open the way")
             here = place_singles(game, singles, edge_points, cfg, fixed_points)
             if here:
@@ -1355,12 +1664,15 @@ def attack(game: Game, cfg: Config, target: Loot | None = None, room: dict[str, 
         if spells:
             _beat(game, cfg, SPELL_BEAT)
         for card in spells:
-            if acfg.spell_placement == "together":
+            if card in quakes:
+                cast_quakes(game, card, quake_at, counts.get(card), cfg)
+            elif acfg.spell_placement == "together":
                 cast_together(game, card, spot, counts.get(card), cfg)
             else:
                 deploy_card(game, card, over_base, cfg)
         # One more go for any hero that was refused, now on other points.
         here += place_singles(game, [c for c in singles if c not in here], edge_points, cfg, fixed_points, own)
+        here += walked
         singles_seen += len(singles)
         troops_seen += len(troops)
         placed_total += len(here)

@@ -218,6 +218,10 @@ class T:
     COLLECT_DARK = "collectors/dark"
     TRY_AGAIN = "buttons/try_again"
     RELOAD = "buttons/reload"
+    # "New Content: Builder needs a moment to add new game data to the village,
+    # Chief. Choose Refresh to reload the game" (after Attack!, Nov 2026): its title and its Refresh
+    NEW_CONTENT = "buttons/new_content"
+    NEW_CONTENT_REFRESH = "buttons/new_content_refresh"
     LOGIN = "buttons/login"  # the game's start screen with no account logged in: "Log in with Supercell ID"
     RATE_TITLE = "buttons/rate_title"  # Google Play's "Rate Clash of Clans" dialog, over the game
     RATE_NEVER = "buttons/rate_never"  # its NEVER: it isn't asked again
@@ -283,7 +287,13 @@ class T:
     WAR_CONFIRM_TITLE = "war/confirm_title"  # "Confirm Attack": "Proceeding will use one of your remaining attacks"
     WAR_CONFIRM_ATTACK = "war/confirm_attack"  # its green "Attack!"
     BAT_SPELL_CARD = "cards/bat_spell"  # the Bat Spell card's picture in the troop bar
+    EARTHQUAKE_SPELL_CARD = "cards/earthquake_spell"  # the Earthquake Spell card's
     WARDEN_CARD = "cards/grand_warden"  # the Grand Warden card's picture in the troop bar
+    QUEEN_CARD = "cards/archer_queen"  # the Archer Queen card's (her face): she walks first
+    CHAMPION_CARD = "cards/royal_champion"  # the Royal Champion card's (her face)
+    HEALER_CARD = "cards/healer"  # the Healer card's: they follow the Queen on her walk
+    INVISIBILITY_SPELL_CARD = "cards/invisibility_spell"  # the Invisibility Spell card's: hides the walker
+    ROCKET_SPEAR = "cards/rocket_spear"  # the Rocket Spear over the Royal Champion's card, once she's down
     AIR_CARDS = "cards/air"  # air troops' card pictures (one per troop): the army is an air army
     GROUND_CARDS = "cards/ground"  # ground troops' card pictures: the army is a ground army
     LURE_CARDS = "cards/lure"  # a cheap troop's card picture: one goes in first to pull out the Clan Castle

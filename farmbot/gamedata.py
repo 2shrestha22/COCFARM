@@ -212,6 +212,7 @@ HEROES: dict[int, str] = {
     28000004: "Royal Champion",
     28000005: "Battle Copter",
     28000006: "Minion Prince",
+    28000007: "Dragon Duke",
 }
 
 PETS: dict[int, str] = {
@@ -245,6 +246,7 @@ EQUIPMENT: dict[int, str] = {
     90000013: "Rocket Spear",
     90000014: "Spiky Ball",
     90000015: "Frozen Arrow",
+    90000016: "Monolith Arrow",
     90000017: "Giant Arrow",
     90000019: "Heroic Torch",
     90000020: "Healer Puppet",
@@ -264,7 +266,36 @@ EQUIPMENT: dict[int, str] = {
     90000049: "Meteor Staff",
     90000050: "Frost Flake",
     90000051: "Stick Horse",
+    90000052: "Fire Heart",
+    90000053: "Rocket Backpack",
+    90000056: "Stun Blaster",
+    90000057: "Flame Blower",
+    90000059: "Electro Fangs",
+    90000060: "Revenge Deck",
+    90000061: "Portal Pendant",
 }
+# (Newer than coc.py's data, 18 Nov 2026: the Dragon Duke, Monolith Arrow and the pieces from 52 on, by
+# the id tables of four other tools that read the export. They agree but on 16 and 59, split two and two
+# between Monolith Arrow and Electro Fangs: Bix's export (Blacksmith 7) holds 16 but not 59, nor Stun
+# Blaster (Blacksmith 9), and Electro Fangs needs Blacksmith 10, so 16 is taken for Monolith Arrow. 62
+# and 63, in the exports but named nowhere yet, show as "Equipment #N".)
+
+# Each piece's rarity (the game's Common, Epic), and how far each rarity goes: a Common piece to level
+# 18, an Epic one to 27 (as the Blacksmith and the wiki give them, 18 Nov 2026).
+EQUIPMENT_EPIC = frozenset({
+    "Giant Gauntlet", "Spiky Ball", "Snake Bracelet", "Stick Horse",
+    "Frozen Arrow", "Magic Mirror", "Action Figure", "Monolith Arrow",
+    "Fireball", "Lavaloon Puppet", "Heroic Torch",
+    "Rocket Spear", "Electro Boots", "Frost Flake",
+    "Dark Crown", "Meteor Staff", "Portal Pendant",
+    "Rocket Backpack", "Revenge Deck",
+})
+EQUIPMENT_MAX = {"Common": 18, "Epic": 27}
+
+
+def equipment_max(name: str) -> int:
+    """The highest level the piece ``name`` goes to."""
+    return EQUIPMENT_MAX["Epic" if name in EQUIPMENT_EPIC else "Common"]
 
 TRAPS: dict[int, str] = {
     12000000: "Bomb",

@@ -269,6 +269,11 @@ def clear_popups(game: Game, rounds: int = 5) -> int:
         if in_chest_room(game):
             pressed += open_event_chests(game)
             continue
+        from farmbot.tasks.search import refresh_for_new_content
+
+        if refresh_for_new_content(game):
+            pressed += 1
+            continue
         hit = next((b for b in POPUP_BUTTONS if game.has(b) and game.click(b)), None)
         if hit is None and game.has(T.CONFIRM) and _confirm_is_free(game):
             hit = T.CONFIRM if game.click(T.CONFIRM) else None

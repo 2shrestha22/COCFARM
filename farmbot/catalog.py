@@ -36,7 +36,9 @@ class Picture:
 QUICK_EXIT = "Leaving battles without restarting the game"
 SNACKS = "Using snacks and potions"
 BAT_SPELLS = "Casting only Bat Spells"
+QUAKES = "Casting Earthquake Spells"
 WARDEN_SIDE = "Putting the Grand Warden with the most troops"
+HERO_WALK = "Queen and Champion walks"
 SUPER_TROOPS = "Activating super troops"
 CAPITAL = "Clan Capital raids"
 STAR_PLANS = "War and ranked attacks planned by army and base"
@@ -53,9 +55,21 @@ PICTURES: list[Picture] = [
     Picture(T.NEXT, "Next", "Scouting a base, bottom right: the word \"Next\".", "Attacking", True),
     Picture(T.BAT_SPELL_CARD, "Bat Spell card", "Troop bar during a battle: the bats and bottle on the "
             "Bat Spell card (not its count or level).", BAT_SPELLS),
+    Picture(T.EARTHQUAKE_SPELL_CARD, "Earthquake Spell card", "Troop bar during a battle: the cracked ground "
+            "on the Earthquake Spell card (not its count or level).", QUAKES),
     Picture(T.WARDEN_CARD, "Grand Warden card", "Troop bar during a battle: the Grand Warden's face on his "
             "card: just his mouth and beard (not his level, the equipment icon in the corner or the green "
             "button).", WARDEN_SIDE),
+    Picture(T.QUEEN_CARD, "Archer Queen card", "Troop bar during a battle: the Archer Queen's face on her "
+            "card, eyes to chin (not her level or the pet in the corner).", HERO_WALK),
+    Picture(T.CHAMPION_CARD, "Royal Champion card", "Troop bar during a battle: the Royal Champion's face on "
+            "her card, eyes to chin (not her level or the pet in the corner).", HERO_WALK),
+    Picture(T.HEALER_CARD, "Healer card", "Troop bar during a battle: the Healer on her card: its lower half, "
+            "below the \"xN\" count (the count changes) and above the level.", HERO_WALK),
+    Picture(T.INVISIBILITY_SPELL_CARD, "Invisibility Spell card", "Troop bar during a battle: the bottle on the "
+            "Invisibility Spell card (not its count or level).", HERO_WALK),
+    Picture(T.ROCKET_SPEAR, "Rocket Spear", "During a battle, once the Royal Champion is down: the Rocket "
+            "Spear's picture over her card (the spear on its purple square, not the square's edge).", HERO_WALK),
     Picture(T.AIR_CARDS, "Air troop cards", "Troop bar during a battle: the picture of an air troop's card "
             "(Dragon, Electro Dragon, Balloon...): its lower half, below the \"xN\" count (the count changes) "
             "and above the level; one picture per troop. With an air army, war and ranked attacks go in "
@@ -333,6 +347,10 @@ PICTURES: list[Picture] = [
     Picture(T.WAR_SCOUT, "War Scout", "A tapped enemy base's panel: the word \"Scout\" on the green button.", WAR),
     Picture(T.TRY_AGAIN, "Try Again", "Connection lost popup: \"Try Again\".", "Recovering from disconnects"),
     Picture(T.RELOAD, "Reload", "\"Another device is connected\" popup: \"Reload\".", "Recovering from disconnects"),
+    Picture(T.NEW_CONTENT, "New Content", "The \"New Content\" window (the game updated while running, met "
+            "after Find a Match): its title.", "Refreshing the game for new content"),
+    Picture(T.NEW_CONTENT_REFRESH, "New Content: Refresh", "The word \"Refresh\" on the \"New Content\" "
+            "window's green button.", "Refreshing the game for new content"),
     Picture(T.LOGIN, "Not logged in", "The game's start screen with no account logged in: \"Log in with Supercell ID\".",
             "Stopping when the game isn't logged in"),
     Picture(T.RATE_TITLE, "Rate Clash of Clans", "The title of Google Play's \"Rate Clash of Clans\" dialog, "

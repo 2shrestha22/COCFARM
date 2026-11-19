@@ -52,6 +52,7 @@ from farmbot.tasks.build_list import (BUILDER, FAILED, HOME, HUD_SHIFT_PX, LOCKE
                                       leaving_town_hall, list_shown, open_tab, place_free, rows, set_filter, started,
                                       tab_free,
                                       top_row_affordable, town_hall_row, upgrade_row)
+from farmbot.tasks import equipment
 from farmbot.tasks.builder import restore_view
 from farmbot.tasks.helpers import APPRENTICE, LAB_ASSISTANT, assign_helper, needed
 from farmbot.upgradable import Survey
@@ -117,7 +118,8 @@ def around_walls(order: list[str], enabled: dict[str, bool], walls: bool) -> tup
 
 def home_kinds(ucfg) -> dict[str, bool]:
     """The home village's kinds of upgrade, each on or off (``upgrade.*``)."""
-    return {"pets": ucfg.pets, "hero": ucfg.heroes, "research": ucfg.lab, "building": ucfg.buildings}
+    return {"pets": ucfg.pets, "hero": ucfg.heroes, "research": ucfg.lab, "equipment": ucfg.equipment,
+            "building": ucfg.buildings}
 
 
 def builder_kinds(bcfg) -> dict[str, bool]:
@@ -157,17 +159,22 @@ def upgrade(game: Game, cfg: Config, read_resources: Reader, full: set[str], las
     first. Returns how many were started."""
     ucfg = cfg.upgrade
     full = {k for k in full if k in HOME.resources}
-    if not ucfg.enabled or not full or not all(game.has(n) for n in NEEDED):
+    only_kinds = kinds
+    kinds = [k for k in plan(ucfg.order, home_kinds(ucfg)) if only_kinds is None or k in only_kinds]
+    # Equipment is paid in ore, not from the storages: it's looked at with none of them full too.
+    ore = "equipment" in kinds and "equipment" not in (locked or {}) and equipment.due(game)
+    if not ucfg.enabled or not (full or ore) or not all(game.has(n) for n in NEEDED):
         return 0
+    if not full:
+        kinds = ["equipment"]
     game.zoom_out()
     loot = read_resources()
     if loot is None:
         return 0
     # No dark elixir before Town Hall 7: nothing is looked for in it (the research filter's dark button).
     budget = {k: getattr(loot, k) for k in full if not (k == "dark" and "dark" in (locked or {}))}
-    only_kinds = kinds
-    kinds = [k for k in plan(ucfg.order, home_kinds(ucfg)) if only_kinds is None or k in only_kinds]
-    for kind, feature in (("pets", "pets"), ("hero", "heroes"), ("research", "research")):
+    for kind, feature in (("pets", "pets"), ("hero", "heroes"), ("research", "research"),
+                          ("equipment", "equipment")):
         if kind in kinds and feature in (locked or {}):
             log.info("Upgrades: no %s: %s", "heroes" if kind == "hero" else kind, locked[feature])
             kinds.remove(kind)
@@ -198,10 +205,12 @@ def upgrade(game: Game, cfg: Config, read_resources: Reader, full: set[str], las
         if only and "building" in kinds:
             log.info("Upgrades: only these buildings, first to last: %s", ", ".join(only))
         research = tuple(ucfg.research_only) or None
+        equipment_picks = tuple(ucfg.equipment_only) or None
         if research and "research" in kinds:
             log.info("Upgrades: only this research, first to last: %s", ", ".join(research))
         done = _in_order(game, kinds, HOME_SPEND, ucfg.first, ucfg.heroes, budget, builders, read_resources, lst,
-                         new=ucfg.new_buildings, left=left, seen=seen, only=only, research=research)
+                         new=ucfg.new_buildings, left=left, seen=seen, only=only, research=research,
+                         equipment_picks=equipment_picks)
         if seen is not None:
             report["town_hall"] = bool(seen.get("town_hall"))
             # What's still free to start one (None: not read): the builders it may use, the laboratory.
@@ -295,7 +304,8 @@ def upgrade_builder_base(game: Game, bcfg: BuilderConfig, read_resources: Reader
 def _in_order(game: Game, kinds: list[str], spend: dict[str, tuple[str, ...]], first: str, heroes: bool,
               budget: dict[str, int], builders: int, read_resources: Reader, lst: BuildList,
               new: bool = False, left: dict | None = None, seen: dict | None = None,
-              only: tuple[str, ...] | None = None, research: tuple[str, ...] | None = None) -> int:
+              only: tuple[str, ...] | None = None, research: tuple[str, ...] | None = None,
+              equipment_picks: tuple[str, ...] | None = None) -> int:
     """Each kind of upgrade in turn, with the resources it may spend that
     are still in ``budget``; with ``new``, buildings not built yet come
     first among the buildings (free ones, like new walls, before anything).
@@ -306,6 +316,9 @@ def _in_order(game: Game, kinds: list[str], spend: dict[str, tuple[str, ...]], f
     if new and "building" in kinds:
         done += _free_buildings(game, lst)
     for kind in kinds:
+        if kind == "equipment":  # (ore, not the budget's resources; no builder)
+            done += equipment.upgrade_equipment(game, equipment_picks, lst)
+            continue
         money = [r for r in spend[kind] if r in budget]
         if not money:
             continue

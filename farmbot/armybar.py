@@ -191,6 +191,45 @@ def is_spent(screen: np.ndarray, card: Card, cfg: BarConfig) -> bool:
     return _saturation(hsv, card.rect) < cfg.spent_ratio * card.saturation
 
 
+CARD_WIDTH_AT_1177 = 91  # px wide a card is on 1177 px wide frames (BOB, 18 Nov)
+PET_ICON = (0.09, 0.42, -0.02, 0.29)  # a placed hero's pet on her card: across and down, in card widths
+PET_COLOUR_SAT, PET_COLOUR_VALUE = 60, 120
+
+
+def pet_colour(screen: np.ndarray, card: Card) -> float:
+    """The share of colour in the pet's picture on a placed hero's card (its
+    top left corner). Greyed out, the pet is down (BOB, 18 Nov: the Spirit
+    Fox's, 0.60 by 0.00)."""
+    w = card.right - card.left
+    x0, x1, y0, y1 = (card.left + round(PET_ICON[0] * w), card.left + round(PET_ICON[1] * w),
+                      max(card.top + round(PET_ICON[2] * w), 0), card.top + round(PET_ICON[3] * w))
+    patch = screen[y0:y1, x0:x1]
+    if not patch.size:
+        return 0.0
+    hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
+    return float(((hsv[..., 1] > PET_COLOUR_SAT) & (hsv[..., 2] > PET_COLOUR_VALUE)).mean())
+
+
+EQUIPMENT_ABOVE = (-0.08, 1.08, -1.0, -0.1)  # a placed hero's equipment over her card: across, then up, in card widths
+SAME_EQUIPMENT = 0.8
+
+
+def shows_equipment(screen: np.ndarray, card: Card, picture: np.ndarray) -> bool:
+    """True if a placed hero's equipment (the pictures over her card, one per
+    piece: BOB, 18 Nov, the Royal Champion's Rocket Spear and Electro Boots)
+    shows ``picture``."""
+    w = card.right - card.left
+    scale = w / CARD_WIDTH_AT_1177
+    x0, x1 = max(card.left + round(EQUIPMENT_ABOVE[0] * w), 0), card.left + round(EQUIPMENT_ABOVE[1] * w)
+    y0, y1 = max(card.top + round(EQUIPMENT_ABOVE[2] * w), 0), max(card.top + round(EQUIPMENT_ABOVE[3] * w), 0)
+    area = screen[y0:y1, x0:x1]
+    if abs(scale - 1.0) > 0.05:
+        picture = cv2.resize(picture, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    if area.shape[0] < picture.shape[0] or area.shape[1] < picture.shape[1]:
+        return False
+    return float(cv2.matchTemplate(area, picture, cv2.TM_CCOEFF_NORMED).max()) >= SAME_EQUIPMENT
+
+
 def _health_bar_share(screen: np.ndarray, card: Card) -> float:
     """Share of bright green (a unit's health bar) across the top of the
     card and just above it, where it sits whether or not the card is raised."""
@@ -201,24 +240,143 @@ def _health_bar_share(screen: np.ndarray, card: Card) -> float:
 
 BAR_START = 10  # px in from the card's side a health bar starts within (inside its border)
 BAR_SOLID = 0.95  # share of a health bar's run that is green (leaves: 0.9 at most)
+BAR_HUE_WARM = 44  # a hurt hero's bar: yellow, orange, red (OpenCV hues up to this; green above)...
+BAR_HUE_RED = 8  # ...and red from the other end of the hue circle
+BAR_ROWS = 12  # px a health bar is deep at most
+BAR_ABOVE = 23  # px over a card's top its health bar's rows are at most (BOB: 14-20)
+BAR_LENGTH = 0.9  # share of the looked-at width a full bar fills (its outline ends short of the card's side)
+BAR_GAP = 3  # px of sparkle a bar's fill may break for
+BAR_THICK = 3  # rows a bar's fill is deep at least
+BAR_DARK = 120  # mean brightness (HSV value) of a bar's dark outline row, at most
+BAR_SHORTEST = 0.1  # share of the width a bar's run is at least (shorter: a fleck of the button behind)...
+BAR_SLIVER = 0.04  # ...unless the outline round it glows red: she's nearly down (BOB, 18 Nov: 8% read as none)
 
 
 def hero_health(screen: np.ndarray, card: Card) -> float | None:
-    """A placed hero's health (0-1) from the length of the green bar on its
-    card, or ``None`` if no bar shows (not placed, or gone)."""
+    """A placed hero's health (0-1) from the length of the bar on its card,
+    or ``None`` if no bar shows (not placed, or gone). The bar is green,
+    then orange about half way down, then red (BOB, 18 Nov: a Queen at
+    about 45% showed orange, which was read as no bar at all)."""
+    read = hero_bar(screen, card)
+    return read[0] if read else None
+
+
+def hero_bar(screen: np.ndarray, card: Card) -> tuple[float, int] | None:
+    """A placed hero's health and its bar's colour (OpenCV hue; the bar
+    over the hero's head on the field is the same), or ``None``."""
     top = max(card.top - 30, 0)
     left, right = card.left + 8, card.right - 8
-    hsv = cv2.cvtColor(screen[top:card.top + 25, left:right], cv2.COLOR_BGR2HSV)
-    green = (hsv[:, :, 0] >= 45) & (hsv[:, :, 0] <= 85) & (hsv[:, :, 1] > 150) & (hsv[:, :, 2] > 150)
+    hsv = cv2.cvtColor(screen[top:card.top + 32, left:right], cv2.COLOR_BGR2HSV)
+    hue, bright = hsv[:, :, 0], (hsv[:, :, 1] > 150) & (hsv[:, :, 2] > 150)
+    # (BOB, 18 Nov: from green to orange it passes yellow, hue ~38, which was read as no bar)
+    green = bright & ((hue <= 85) | (hue >= 180 - BAR_HUE_RED))
     if not green.size:
         return None
-    row = green[int(green.sum(axis=1).argmax())]
-    xs = np.flatnonzero(row)
-    # The bar fills from the left without a gap; green leaves of the village
-    # behind the bar (it's see-through above the cards) are scattered patches.
-    if xs.size < 3 or xs.min() > BAR_START or xs.size < BAR_SOLID * (xs.max() - xs.min() + 1):
+    # The bar fills from the card's side without a gap; leaves and grass of the
+    # village behind it (it's see-through above the cards), and the card's gold
+    # top edge, are patchy. The bar's row: the longest solid run from the side.
+    runs = [_solid_run(r) for r in green]
+    # ...is a few rows deep, all much the same length, and outlined above and
+    # below: dark, or (low) flashing red its whole length. Card art, flecks of
+    # scenery and the outline itself aren't (BOB, 18 Nov: a King and a Dragon
+    # Duke not yet out read as hurt).
+    value = hsv[:, :, 2]
+    # (BOB, 18 Nov: low, the outline glows a dark red, neither dark nor bright: read as no bar, so she was
+    # taken for hidden and nothing went on her)
+    reddish = ((hue <= BAR_HUE_RED) | (hue >= 180 - BAR_HUE_RED)) & (hsv[:, :, 1] > 100)
+    length = int(BAR_LENGTH * green.shape[1])
+    glows = [reddish[r, :length].mean() >= 0.8 for r in range(len(green))]
+    outline = [value[r].mean() < BAR_DARK or green[r, :length].mean() >= 0.9 or glows[r]
+               for r in range(len(green))]
+    # (Sunny lime grass behind a card not yet out is a solid block many rows deep; her bar isn't:
+    # BOB, 18 Nov, an 18-row block read as a full bar, she was taken for out already and didn't walk.)
+    solid = [green[r].mean() >= 0.6 for r in range(len(green))]
+
+    def _deep(i: int) -> bool:
+        up = next((k for k in range(i, -1, -1) if not solid[k]), -1)
+        down = next((k for k in range(i, len(solid)) if not solid[k]), len(solid))
+        return down - up - 1 > BAR_ROWS
+
+    found = []
+    for i in sorted(range(len(runs)), key=lambda i: -runs[i]):
+        if runs[i] < BAR_SLIVER * green.shape[1]:
+            break
+        edge = glows if runs[i] < BAR_SHORTEST * green.shape[1] else outline
+        up, down = _block(runs, i)
+        if (down - up - 1 >= BAR_THICK and not _deep(i) and any(edge[up - k] for k in range(3) if up - k >= 0)
+                and any(edge[down + k] for k in range(3) if down + k < len(runs))):
+            found.append(i)
+    # A strip that carries on past the card's side is the village behind (BOB, 18 Nov: lime grass
+    # over a Champion's card read 100% while her bar, just under it, showed 28%); her bar stops at
+    # the card's border (BOB, 18 Nov: a full bar runs to the far side of the looked-at width, and
+    # taking that for grass read flecks of her equipment icons as 22%).
+    past = cv2.cvtColor(screen[top:card.top + 32, right:right + 16], cv2.COLOR_BGR2HSV)
+    beyond = ((past[:, :, 1] > 150) & (past[:, :, 2] > 150) & ((past[:, :, 0] <= 85) | (past[:, :, 0] >= 180 - BAR_HUE_RED))
+              if past.size else np.zeros((len(green), 1), bool))
+    def _past(i: int) -> bool:  # (the strip's rows, any: its soft top row is patchier)
+        up, down = _block(runs, i)
+        return max(beyond[r].mean() for r in range(up + 1, down)) >= 0.8
+
+    scenery = [i for i in found if _run(green[i]) >= green.shape[1] - 1 and _past(i)]
+    kept = [i for i in found if i not in scenery]
+    # (Her bar sits just over the card, 14-20 px; a strip of grass showing through over it is higher
+    # up: BOB, 18 Nov, one 25 px over read 100% while she fell, not crossing into the next card.)
+    near = [i for i in kept if top + i >= card.top - BAR_ABOVE]
+    at = near[0] if near else kept[0] if kept else found[0] if found else None
+    if at is None:
         return None
-    return min(1.0, (int(xs.max()) + 1) / row.size)
+    row = green[at]
+    start = int(np.flatnonzero(row)[0])
+    # A bar is a thin strip: as wide a run of that colour many rows deep is
+    # something behind the cards (the orange Next button over the bar, say).
+    # (Low, the bright red outline rows over and under a sliver of fill aren't its depth.)
+    deep = sum(1 for r, share in enumerate(green[:, start:start + runs[at]].mean(axis=1))
+               if share >= 0.5 and not outline[r])
+    if deep > BAR_ROWS:
+        return None
+    # Low, the bar's outline flashes red its whole length above and below the
+    # fill (BOB, 18 Nov: a Champion at about 30% read as full): the bar's
+    # length is the most rows' run from the left, not the longest row's.
+    rows = [at]
+    for step in (-1, 1):
+        r = at + step
+        while 0 <= r < len(green) and green[r, :BAR_START + 1].any():
+            rows.append(r)
+            r += step
+    health = min(1.0, float(np.median([_run(green[r]) for r in rows])) / (BAR_LENGTH * row.size))
+    fill = hue[rows, :max(_run(row), 1)][green[rows, :max(_run(row), 1)]]
+    fill = np.where(fill >= 90, fill.astype(int) - 180, fill)  # (red runs round: 178 is -2)
+    return health, int(np.median(fill)) % 180 if fill.size else -1
+
+
+def _block(runs: list[int], at: int) -> tuple[int, int]:
+    """The rows just above and below those on end, ``at``'s among them, that
+    run about as long as it."""
+    n = runs[at]
+    like = [abs(m - n) <= max(3, 0.2 * n) for m in runs]
+    up = next((k for k in range(at - 1, -1, -1) if not like[k]), -1)
+    down = next((k for k in range(at + 1, len(runs)) if not like[k]), len(runs))
+    return up, down
+
+
+def _solid_run(row: np.ndarray) -> int:
+    """How long a row's colour runs, if it could be a bar's: from the card's
+    side, all but solid (0 otherwise)."""
+    xs = np.flatnonzero(row)
+    if xs.size < 3 or xs[0] > BAR_START:
+        return 0
+    span = _run(row) - int(xs[0])  # (flecks of the village past its end aren't its)
+    return span if (xs < xs[0] + span).sum() >= BAR_SOLID * span else 0
+
+
+def _run(row: np.ndarray) -> int:
+    """Where a bar's row ends: its first run of colour from the left (a
+    sparkle's gap of a few px doesn't end it)."""
+    xs = np.flatnonzero(row)
+    if not xs.size:
+        return 0
+    gaps = np.flatnonzero(np.diff(xs) > BAR_GAP + 1)
+    return int(xs[gaps[0]] if gaps.size else xs[-1]) + 1
 
 
 def unit_on_field(before: np.ndarray, after: np.ndarray, card: Card, min_gain: float = 0.06) -> bool:

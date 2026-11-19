@@ -43,12 +43,20 @@ FIELDS = [
     Field("attack.spell_placement", "text"),
     Field("attack.spells", "text"),
     Field("attack.spell_spot", "text"),
+    Field("attack.quakes_per_spot", "int", 1, 20),
+    Field("attack.quake_aim", "text"),
+    Field("attack.funnel", "text"),
     Field("attack.use_siege", "bool"),
     Field("attack.super_troops", "bool"),
     Field("attack.hero_abilities", "bool"),
     Field("attack.hero_ability_delay", "float", 0, 120),
     Field("attack.ability_health", "percent", 0, 95),
     Field("attack.ability_max_wait", "float", 5, 180),
+    Field("attack.hero_walk", "text"),
+    Field("attack.walk_time", "float", 5, 120),
+    Field("attack.walk_invisibility_health", "percent", 10, 95),
+    Field("attack.walk_fox", "text"),
+    Field("attack.walk_spear_early", "bool"),
     Field("attack.speed_up", "bool"),
     Field("attack.star_bonus", "bool"),
     Field("attack.end_when_no_loot", "bool"),
@@ -122,6 +130,8 @@ FIELDS = [
     Field("upgrade.first", "text"),
     Field("upgrade.only", "buildings"),
     Field("upgrade.research_only", "research"),
+    Field("upgrade.equipment", "bool"),
+    Field("upgrade.equipment_only", "equipment"),
     Field("upgrade.start_gold", "amount"),
     Field("upgrade.start_elixir", "amount"),
     Field("upgrade.start_dark", "amount"),
@@ -129,6 +139,7 @@ FIELDS = [
     Field("upgrade.town_hall", "bool"),
     Field("upgrade.wait_for_town_hall", "bool"),
     Field("upgrade.wake_up", "bool"),
+    Field("upgrade.pause_when_idle", "bool"),
     Field("upgrade.apprentice", "bool"),
     Field("upgrade.lab_assistant", "bool"),
     Field("upgrade.builders", "int", -1, 10),
@@ -229,7 +240,8 @@ def _display(field: Field, value: Any) -> Any:
         if field.path.startswith(("storage.", "upgrade.start_")) and not value:
             return ""  # not known yet; for upgrades, once full
         return f"{value:,}"
-    if field.kind in ("sides", "resources", "hours", "units", "order", "buildings", "research"):
+    if field.kind in ("sides", "resources", "hours", "units", "order", "buildings", "research",
+                      "equipment"):
         return list(value)
     if field.kind == "presets":  # {"13": ["1 Ice Golem", ...]} → {"13": "1 Ice Golem, ..."}
         return {level: ", ".join(entries) for level, entries in value.items()}
@@ -267,7 +279,7 @@ def _parse(field: Field, raw: Any) -> Any:
         return [name for name in dict.fromkeys(raw) if name in BY_NAME]  # in the order given
     if field.kind == "order":
         return list(dict.fromkeys(str(k) for k in raw))  # first to last
-    if field.kind in ("buildings", "research"):
+    if field.kind in ("buildings", "research", "equipment"):
         from farmbot.tasks.row_names import PICKS
 
         return [name for name in dict.fromkeys(raw) if name in PICKS[field.kind]]  # first to last

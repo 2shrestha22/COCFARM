@@ -7,6 +7,8 @@ import re
 from dataclasses import dataclass, replace
 from typing import Callable
 
+import cv2
+
 from farmbot import human
 from farmbot.config import RegionsConfig, SearchConfig
 from farmbot.game import Game, T
@@ -28,6 +30,11 @@ class SearchBlocked(SearchError):
 
 class NextNotFound(SearchError):
     """No base showed: its Next button never came (or went away)."""
+
+
+class GameRefreshed(SearchError):
+    """The game's "New Content" window showed instead of a base: Refresh was
+    pressed and the game reloaded to the village. Searching again is all it takes."""
 
 
 class LootUnreadable(SearchError):
@@ -281,12 +288,16 @@ def storage_max(game: Game, regions: RegionsConfig, kind: str) -> int | None:
                 most = game.vision.read_number(game._current(), _max_number_region(m, where), T.LOOT_FONT,
                                                MAX_STYLE)
             break
-    # Close it: the bar again (it closes the dark, see-through box, still the
-    # builder base's), then, if that left it open, a tap on the box itself
-    # (the home village's light box since November 2026 stays open, and covers
-    # the next bar down; it takes the tap). Never the see-through box first:
-    # a tap on it reaches what's under it (the builder base's boat: home).
-    for close in ("bar", "box", "bar"):
+    # Close it. The home village's light box (November 2026) stays open on a
+    # second tap on the bar: a tap on the box itself closes it (it takes the
+    # tap), so it gets that tap first, not a wasted one on the bar (seen as a
+    # double tap on each bar). The dark, see-through box (the builder base's)
+    # closes from the bar: never tapped first, a tap on it reaches what's
+    # under it (the builder base's boat: home).
+    game.refresh()
+    m = label()
+    order = ("box", "bar") if m is not None and _light_box(game, m) else ("bar", "box", "bar")
+    for close in order:
         game.refresh()
         m = label()
         if m is None:
@@ -295,6 +306,17 @@ def storage_max(game: Game, regions: RegionsConfig, kind: str) -> int | None:
         if _soon(game, lambda: not is_open(), MAX_CLOSES):
             break
     return most
+
+
+LIGHT_BOX = 0.5  # share of bright pixels around "Max:" in the light box (about 0.76); the see-through one far less
+
+
+def _light_box(game: Game, label) -> bool:
+    """Whether the storage's box is the light one, which a tap closes."""
+    area = game.screen[max(label.y - label.h, 0):label.y + label.h, max(label.x - 2 * label.w, 0):label.x + 2 * label.w]
+    if area.size == 0:
+        return False
+    return float((cv2.cvtColor(area, cv2.COLOR_BGR2HSV)[:, :, 2] >= 200).mean()) >= LIGHT_BOX
 
 
 MAX_OPENS = 1.2  # seconds the storage's box takes to open at most (it's looked for as it does)
@@ -414,6 +436,7 @@ def _find_a_match(game: Game, timeout: float) -> bool:
 
 
 NEXT_TIMEOUT = 40  # s for a base to show (slow emulators and networks take a while on the clouds)
+ARMY_RETAP = 3  # s the army window may stay up after Attack! before it's tapped again
 RECALIBRATE_AFTER = 10  # s without Next before the UI scale is measured again on this screen
 # "Unable to attack Village!" is drawn a little differently on some emulators:
 # looked for less strictly than other pictures (it's only looked for here).
@@ -464,12 +487,20 @@ def _wait_for_base(game: Game, timeout: float = NEXT_TIMEOUT) -> bool:
     start = game.clock()
     deadline = start + timeout
     recalibrated = False
+    tapped = start
     while True:
         game.refresh()
         if game.find(T.NEXT):
             return True
         if _unable_to_attack(game):
             raise _blocked(game, "its words")
+        if game.clock() - tapped >= ARMY_RETAP and game.has(T.ARMY_ATTACK) and game.click(T.ARMY_ATTACK):
+            # the army window still up: its Attack! tap went unanswered (BOB, 18 Nov 2026)
+            tapped = game.clock()
+            log.info("The army window's Attack! didn't answer: tapped it again")
+            continue
+        if refresh_for_new_content(game):
+            raise GameRefreshed("the game's \"New Content\" window showed instead of a base: refreshed")
         if game.has(T.RETURN_HOME) and game.find(T.RETURN_HOME):
             # A result screen instead of a base: the lockout's own Return
             # Home (its words drawn too differently to match), or a battle
@@ -490,6 +521,24 @@ def _wait_for_base(game: Game, timeout: float = NEXT_TIMEOUT) -> bool:
             log.warning("Next not detected after %ds: %s", timeout, _screen_state(game))
             return False
         game.wait(0.5, exact=True)
+
+
+NEW_CONTENT_RELOAD = 120  # s the game takes at most to reload to the village after Refresh
+
+
+def refresh_for_new_content(game: Game) -> bool:
+    """The game's "New Content" window ("Builder needs a moment to add new
+    game data to the village... Choose Refresh to reload"): Refresh pressed,
+    and the village waited for. Cancel would only bring it back. True if the
+    window showed."""
+    if not (game.has(T.NEW_CONTENT) and game.find(T.NEW_CONTENT)):
+        return False
+    log.info("The game has new content to load: pressing Refresh")
+    if not game.click(T.NEW_CONTENT_REFRESH):
+        return False
+    if not game.wait_for(T.BATTLE, timeout=NEW_CONTENT_RELOAD):
+        log.warning("The village didn't show within %ds of Refresh", NEW_CONTENT_RELOAD)
+    return True
 
 
 def _press_next(game: Game, delay: float) -> None:

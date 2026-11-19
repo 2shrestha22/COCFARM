@@ -40,6 +40,8 @@ EXTRA_NAMES = {"_collect": "collecting", "_loot_cart": "the loot cart", "_graves
                "_snacks": "snacks and potions",
                "_treasury": "the Clan Castle treasury",
                "_clan_visit": "the clan (donations, requests)", "_capital": "Clan Capital raids",
+               "_request_troops": "troop requests", "_donate": "donations",
+               "_clan_check": "the clan check", "_close_chat": "closing the clan chat",
                "_upgrades": "upgrades", "builder": "the Builder Base", "_browse": "looking around the game",
                "ranked_attacks": "ranked battles", "war_attacks": "clan war attacks"}
 ERROR_SCREENS_KEPT = 200  # newest failed-round screens kept; older ones are deleted
@@ -806,7 +808,9 @@ class Bot:
         self._extra(self._snacks)
         self.checkpoint()
         for job in human.order(self.game.rng, [self._clan_visit, self._capital], self.game.uses("chore_order")):
-            self._extra(job)
+            # (The clan visit's steps are extras of their own: one failing,
+            # the game crashing even, doesn't pause the others.)
+            job() if job == self._clan_visit else self._extra(job)
         self._extra(self._browse)
         self._extra(self._upgrades)
 
@@ -1048,24 +1052,41 @@ class Bot:
         # One visit to the clan chat: the membership check, donations and the
         # request all run in it, and it's closed once at the end.
         if (cfg.clan.donate or cfg.clan.request_troops) and self._in_clan is None:
-            self._in_clan = clan.in_clan(self.game, close=False)
-            if self._in_clan is False:
-                log.info("Not in a clan: skipping troop requests and donations (join one in the game)")
+            self._extra(self._clan_check)
         clan_ok = self._in_clan is not False
         self.checkpoint()
-        if cfg.clan.donate and clan_ok:
-            self.status("Donating")
-            clan.donate(self.game, cfg.clan, close=False)
+        # The request first: it's on a timer, and donating can take a while.
+        # Each is an extra of its own, so donations failing don't pause it.
         if cfg.clan.request_troops and clan_ok:
-            now = self.game.clock()
-            if self._next_request is None or now >= self._next_request:
-                self.status("Requesting troops")
-                _, wait = clan.request_troops(self.game, cfg.clan, close=False)
-                # Wait out the game's cooldown (read off the button), or the
-                # configured interval when it couldn't be read.
-                self._next_request = now + (wait + 30 if wait else cfg.clan.request_every_minutes * 60)
+            self._extra(self._request_troops)
+        if cfg.clan.donate and clan_ok:
+            self._extra(self._donate)
         if cfg.clan.donate or cfg.clan.request_troops:
-            clan.close_chat(self.game)
+            self._extra(self._close_chat)
+
+    def _clan_check(self) -> None:
+        self._in_clan = clan.in_clan(self.game, close=False)
+        if self._in_clan is False:
+            log.info("Not in a clan: skipping troop requests and donations (join one in the game)")
+
+    def _close_chat(self) -> None:
+        clan.close_chat(self.game)
+
+    def _request_troops(self) -> None:
+        now = self.game.clock()
+        # A little early: a cooldown that short is waited out in the chat.
+        if self._next_request is not None and now < self._next_request - clan.WAIT_OUT:
+            return
+        self.status("Requesting troops")
+        _, wait = clan.request_troops(self.game, self.config.clan, close=False)
+        # Back when the game's cooldown (read off the button) may be over, or
+        # after the configured interval when it couldn't be read.
+        self._next_request = self.game.clock() + (clan.soonest(wait) if wait
+                                                  else self.config.clan.request_every_minutes * 60)
+
+    def _donate(self) -> None:
+        self.status("Donating")
+        clan.donate(self.game, self.config.clan, close=False)
 
     def _browse(self) -> None:
         """"Look around the game": every few rounds, something besides farming."""
@@ -1107,10 +1128,14 @@ class Bot:
             if full and self._recheck_storages("home"):
                 full = self.full_storages()  # bigger now (a storage built or upgraded): maybe not full
             full |= self._upgrade_amounts_reached()  # (or holding the amount set to start at)
-            if cfg.upgrade.wake_up:
+            if cfg.upgrade.wake_up or cfg.upgrade.pause_when_idle:
                 full = {"gold", "elixir", "dark"}  # tried with the loot held: what it covers starts
             if not full:
                 self._why_no_upgrades()
+                if cfg.upgrade.equipment:  # (ore: not from the storages, so looked at with none full too)
+                    self.status("Upgrading equipment")
+                    self.session["upgrades"] += upgrade.upgrade(self.game, cfg, self.read_resources, set(),
+                                                                locked=self.locked(), kinds=["equipment"])
             if full and (before or not after):
                 self._home_upgrades(full, before, walls_after=cfg.walls.enabled, handed=handed)
         runs_after = bool(cfg.upgrade.enabled and full and after)  # (upgrades after the walls, this round)
@@ -1281,10 +1306,10 @@ class Bot:
         return self.village is not None and self.village is not before
 
     def _wake_on(self) -> bool:
-        """Upgrades → "Close COCFARM between upgrades" is on, with upgrades
-        on in either village."""
+        """Upgrades → "Close COCFARM between upgrades" or "Pause when there's
+        nothing left to upgrade" is on, with upgrades on in either village."""
         u = self.config.upgrade
-        return bool(u.wake_up and (u.enabled or self.config.builder.upgrade))
+        return bool((u.wake_up or u.pause_when_idle) and (u.enabled or self.config.builder.upgrade))
 
     def _home_slots_wanted(self) -> dict[str, bool]:
         """The home village's slots its upgrades use ("builders", "lab");
@@ -1414,7 +1439,8 @@ class Bot:
         except DeviceError as stop:
             log.info("Couldn't close the game: %s", stop)
         self._left_selected = self._left_zoomed_in = False  # (the game opens afresh)
-        if back - now >= wakeup.SOON and self._schedule_wake is not None and self._schedule_wake(back):
+        closes = self.config.upgrade.wake_up and self._schedule_wake is not None  # (else: paused, COCFARM open)
+        if back - now >= wakeup.SOON and closes and self._schedule_wake(back):
             self.left_until = back
             log.info("Close between upgrades: every builder and laboratory is busy: closing until %s",
                      f"{back:%a %H:%M}")
@@ -1423,11 +1449,15 @@ class Bot:
                                "on_stopped", "info")
             self.status(f"Closed until {back:%a %H:%M}: Windows opens COCFARM for the next upgrade")
             return True
-        if back - now >= wakeup.SOON:
+        if back - now >= wakeup.SOON and self.config.upgrade.wake_up:
             log.info("Close between upgrades: Windows wasn't set to open COCFARM: waiting with it open")
-        log.info("Close between upgrades: every builder and laboratory is busy: waiting until %s",
-                 f"{back:%a %H:%M}")
-        self.status(f"Every builder busy: the next upgrade at {back:%a %H:%M}")
+        log.info("Pause between upgrades: every builder and laboratory is busy (or has nothing left to start): "
+                 "not attacking until %s, when the next upgrade is done", f"{back:%a %H:%M}")
+        if not self.config.upgrade.wake_up:
+            self.notifier.send("Paused until the next upgrade", f"Every builder (and laboratory) is busy, so the "
+                               f"farm paused. It carries on at {back:%a %H:%M}, once the next upgrade is done.",
+                               "on_stopped", "info")
+        self.status(f"Every builder busy: paused until the next upgrade at {back:%a %H:%M}")
         self._rest(max((back - now).total_seconds(), 0))
         self.checkpoint()
         return True
@@ -1930,6 +1960,9 @@ class Bot:
                         break
                 except Stopped:
                     raise
+                except search.GameRefreshed as exc:  # the game reloaded itself for new content: search again
+                    log.info("%s; searching again", exc)
+                    continue
                 except search.SearchBlocked as exc:  # a battle left midway: closing the game a while clears it
                     self._wait_out_blocked(exc)
                 except screens.MaintenanceBreak as exc:  # over in an hour or so: waited out

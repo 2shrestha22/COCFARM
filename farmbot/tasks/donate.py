@@ -1,8 +1,9 @@
 """Donating to Clan Castle requests from the donate window.
 
 The window (Donation Resource) shows two rows of troop cards, with the
-siege machines at their end, and a row of spells; both scroll sideways,
-but the bot only uses the screen the window opens on.
+siege machines at their end, and a row of spells; both scroll sideways.
+The bot pages along a row while a unit it wants hasn't shown yet, and
+flicks the troop rows to their end for the siege machines.
 A card in colour can be donated, a grey one can't (it doesn't fit, it's
 not unlocked, or there's no resource for it; when a request names units,
 those come first in the window and are the only ones in colour). Each tap
@@ -13,7 +14,9 @@ in colour; then (if asked) fills what's left with the biggest troop that
 still fits; then the siege machine and spells picked. With no main troops
 picked, it gives the preset army of the requester's Clan Castle level,
 read from the room the request's bubble shows (see farmbot/castle.py). It never
-donates while the window is set to pay with gems.
+donates while the window is set to pay with gems. Every tap is checked to
+have given a unit (the window's counters change); one that didn't means
+the request filled up from others' donations, and it's left at once.
 """
 
 from __future__ import annotations
@@ -238,53 +241,238 @@ def read_castle(game: Game, screen: np.ndarray, button: tuple[int, int]) -> Cast
     return castle
 
 
+# What changes in the window when a tap gives a unit: the "Donate Troops:
+# n/N" and "Donate Spells: n/N" counters (under their labels) and the strip
+# of what's been given, at the bottom. A tap that changes none of them was
+# turned down (the request filled up from others' donations meanwhile).
+COUNTERS = ((455, 238, 320, 26), (455, 518, 320, 26), (455, 712, 670, 100))  # x, y, w, h with the title at TITLE_Y
+CHANGED = 40  # a pixel this much brighter or darker in any channel has changed...
+CHANGED_PIXELS = 4  # ...and this many of them is a donation that went through (a still window changes none: one thin digit is enough)
+TAP_LOOKS = (0.12, 0.15, 0.2, 0.3)  # s between looks for a tap's donation to show (0.77 s in all)
+OPEN_LOOKS = 6  # looks (0.15 s apart) for the window's cards to show once it opens
+
+# Scrolling a row of cards sideways. A drag that slows to a stop before it
+# lifts moves the row by its own length (no fling), so a page overlaps the
+# one before by a couple of cards (a card cut by the panel's edge isn't
+# read). To the end (the siege machines), quick flicks.
+PAGE_DRAG = 400  # px; the row moves about 270 of it (the touch slop takes the rest): three cards
+PAGE_MS = 650
+FLICK = 560
+FLICK_MS = 160
+SCROLL_SETTLE = 0.25  # s before the first look at a row let go of...
+STILL_LOOKS = 8  # ...then looks (0.1 s apart) until it's at rest: two the same
+ROW_RESTING = 1.0  # mean change of the row's pixels between two looks below which it's at rest
+MAX_PAGES = 16  # drags along one row at most
+ROW_STILL = 3.0  # mean change of the row's pixels below which a drag moved nothing: its end
+
+
+class Refused(Exception):
+    """A tap that gave nothing: the request is full (others filled it), or
+    the game turned the donation down."""
+
+    def __init__(self, given: int):
+        super().__init__(f"donation refused after {given} unit(s)")
+        self.given = given
+
+
+def _counters(screen: np.ndarray, dy: int) -> list[np.ndarray]:
+    h, w = screen.shape[:2]
+    out = []
+    for x, y, cw, ch in COUNTERS:
+        y0, y1 = max(0, y + dy), min(h, y + dy + ch)
+        out.append(screen[y0:y1, x:min(w, x + cw)].astype(np.int16))
+    return out
+
+
+def went_through(before: np.ndarray, after: np.ndarray, dy: int) -> bool:
+    """True if a donation shows between two looks at the window: a counter
+    or the strip of given units changed."""
+    changed = 0
+    for a, b in zip(_counters(before, dy), _counters(after, dy)):
+        if a.shape == b.shape and a.size:
+            changed += int((np.abs(a - b).max(axis=2) >= CHANGED).sum())
+    return changed >= CHANGED_PIXELS
+
+
+def _title_on(game: Game, screen: np.ndarray | None) -> int | None:
+    """The window's offset on this very screenshot (``None``: closed)."""
+    if screen is None:
+        return None
+    match = game.vision.find(screen, T.DONATE_WINDOW)
+    return None if match is None else match.y - TITLE_Y
+
+
+def _row_band(rows, dy: int) -> tuple[int, int]:
+    return rows[0][0] + dy + 7, rows[-1][1] + dy - 7
+
+
+def _drag_row(game: Game, rows, dy: int, distance: int, ms: int, slow_end: bool) -> None:
+    """Drag a row of cards ``distance`` px to the left, along the gap
+    between the two troop rows (or a spell card's top edge): long enough
+    never to read as a tap on a card."""
+    y = ((rows[0][1] + rows[1][0]) // 2 if len(rows) > 1 else rows[0][0] + 10) + dy
+    x1 = PANEL_X[1] - 50
+    x2 = x1 - distance
+    drag = getattr(game.device, "drag", None)
+    if slow_end and drag is not None:
+        # Along the row, slowing down, then held still a moment before
+        # lifting: the row stops where the finger does.
+        game.check_in_front()
+        steps = 14
+        points = [(round((x1 + (x2 - x1) * (1 - (1 - i / steps) ** 2)) * game.scale), round(y * game.scale))
+                  for i in range(steps + 1)]
+        points += [points[-1]] * 4
+        if drag(points, ms):
+            game.screen = None
+            return
+    game.swipe(x1, y, x2, y, ms)
+
+
+def _at_rest(game: Game, rows, dy: int) -> np.ndarray:
+    """The screen once a row let go of has stopped (a flick coasts, and
+    may bounce at the row's end): two looks in a row the same."""
+    y0, y1 = _row_band(rows, dy)
+    x0, x1 = PANEL_X
+    game.wait(SCROLL_SETTLE, exact=True)
+    last = game.refresh()
+    for _ in range(STILL_LOOKS):
+        game.wait(0.1, exact=True)
+        now = game.refresh()
+        if _title_on(game, now) != dy:
+            return now
+        band = (slice(y0, y1), slice(x0, x1))
+        if float(np.abs(now[band].astype(np.int16) - last[band].astype(np.int16)).mean()) < ROW_RESTING:
+            return now
+        last = now
+    return last
+
+
+def scroll_row(game: Game, rows, dy: int, to_end: bool = False) -> np.ndarray | None:
+    """Move a row of cards on (a page, or a flick towards its end); the
+    screen after, or ``None`` if it didn't move (it was at its end) or the
+    window closed."""
+    before = game.screen if game.screen is not None else game.refresh()
+    y0, y1 = _row_band(rows, dy)
+    x0, x1 = PANEL_X
+    if to_end:
+        _drag_row(game, rows, dy, FLICK, FLICK_MS, slow_end=False)
+    else:
+        _drag_row(game, rows, dy, PAGE_DRAG, PAGE_MS, slow_end=True)
+    after = _at_rest(game, rows, dy)
+    if _title_on(game, after) != dy:
+        return None
+    moved = float(np.abs(after[y0:y1, x0:x1].astype(np.int16) - before[y0:y1, x0:x1].astype(np.int16)).mean())
+    return after if moved >= ROW_STILL else None
+
+
 def _give(game: Game, rows, main: list[str], fill: bool, pictures, limit: int,
-          counts: dict[str, int | None] | None = None) -> int:
+          counts: dict[str, int | None] | None = None, to_end: bool = False) -> int:
     """Donate from one set of rows (troops or spells) until nothing more
     should or can be given; with ``counts``, at most that many of each main
-    unit (``None``: as many as fit). Only the screen the window opens on is used: what a request asks
-    for is there, in colour. Returns how many units were given."""
+    unit (``None``: as many as fit). The row is paged through while a main
+    unit wanted hasn't shown yet (what a request names leads the row, in
+    colour); ``to_end`` goes to the row's end first (the siege machines).
+    Each tap is checked to have given a unit: one that didn't raises
+    :class:`Refused`. Returns how many units were given."""
     left = {name: count for name, count in (counts or {}).items() if count is not None}
 
     def wanted() -> list[str]:
         return [n for n in main if left.get(n, 1) > 0]
 
-    given = 0
+    given = pages = 0
+    seen: set[str | None] = set()
+    screen = game.refresh()
+    dy = _title_on(game, screen)
+    if dy is not None and to_end:
+        for _ in range(4):
+            moved = scroll_row(game, rows, dy, to_end=True)
+            if moved is None:
+                break
+            screen = moved
+        screen = game.screen if game.screen is not None else game.refresh()
     while given < limit:
-        dy = _title_dy(game)
+        dy = _title_on(game, screen)
         if dy is None:
             break  # the window closed: the request is full
-        card = choose(read_cards(game.refresh(), rows, pictures, dy), wanted(), fill)
-        if card is None:
-            break
+        cards = read_cards(screen, rows, pictures, dy)
+        seen.update(c.name for c in cards)
+        card = choose(cards, wanted(), fill)
+        unseen = [n for n in wanted() if n not in seen]
+        if card is None or (card.name not in main and unseen):
+            # A main unit wanted may be further along the row: page on to
+            # it (filling waits until every one has shown, or the row ends).
+            if not unseen:
+                break
+            moved = scroll_row(game, rows, dy) if pages < MAX_PAGES else None
+            pages += 1
+            if moved is not None:
+                screen = moved
+                continue
+            if card is None:
+                break
+            seen.update(wanted())  # the row's end: fill from here
+            continue
         name = card.name
         log.info("Donating %s", name or "an unknown unit")
         # Give it while it stays in colour (and stays the best choice).
+        retried = False
         while given < limit:
             game.tap(*card.center)
+            game.screen = None
+            after = screen
+            for pause in TAP_LOOKS:
+                game.wait(pause, exact=True)
+                after = game.refresh()
+                if _title_on(game, after) != dy or went_through(screen, after, dy):
+                    break
+            if _title_on(game, after) != dy:
+                # It closed: the request filled (this tap may have been the last).
+                return given + 1 if went_through(screen, after, dy) else given
+            if not went_through(screen, after, dy):
+                # Once more if it's still there in colour (a tap the game
+                # missed); a second that gives nothing: the request is full.
+                here = read_cards(after, rows, pictures, dy)
+                again = next((c for c in here if c.name == name and c.available and abs(c.x - card.x) < 20), None)
+                if retried or again is None:
+                    raise Refused(given)
+                retried, card, screen = True, again, after
+                continue
             given += 1
             if name in left:
                 left[name] -= 1
-            game.wait(0.4)
-            if _title_dy(game) is None:
-                return given
-            here = read_cards(game.refresh(), rows, pictures, dy)
+            screen = after
+            here = read_cards(screen, rows, pictures, dy)
             card = next((c for c in here if c.name == name and c.available and abs(c.x - card.x) < 20), None)
             if card is None or choose(here, wanted(), fill) != card:
                 break  # greyed out, given enough, or something better is on show now
     return given
 
 
+def wait_for_cards(game: Game) -> int | None:
+    """Once the window's title shows, a few quick looks until its cards do
+    (they slide in with it). Its offset, or ``None`` if it closed."""
+    for _ in range(OPEN_LOOKS):
+        screen = game.refresh()
+        dy = _title_on(game, screen)
+        if dy is None:
+            return None
+        if _columns(screen, TROOP_ROWS[0][0] + dy, TROOP_ROWS[0][1] + dy):
+            return dy
+        game.wait(0.15, exact=True)
+    return _title_on(game, game.screen)
+
+
 def donate_open_window(game: Game, cfg: ClanConfig, request: np.ndarray | None = None,
                        button: tuple[int, int] | None = None) -> int:
     """Fill the request whose donate window is open. ``request`` is the
     chat before it opened and ``button`` its Donate button there (to read
-    the castle's room from the bubble). Returns units given."""
-    dy = _title_dy(game)
+    the castle's room from the bubble). Returns units given; a request that
+    turns a donation down (full meanwhile) is left at once."""
+    dy = wait_for_cards(game)
     if dy is None:
         return 0
     pictures = _pictures(str(Path(game.vision.library.root) / T.DONATE_ITEM_DIR))
-    screen = game.refresh()
+    screen = game.screen
     troops, spell_cards = read_cards(screen, TROOP_ROWS, pictures, dy), read_cards(screen, SPELL_ROWS, pictures, dy)
     if pays_with_gems(screen, troops + spell_cards):
         log.warning("The donate window is set to pay with gems: not donating (switch it back to elixir)")
@@ -299,16 +487,26 @@ def donate_open_window(game: Game, cfg: ClanConfig, request: np.ndarray | None =
     def of(kind: str, picked: list[str]) -> list[str]:
         return [n for n in picked or list(plan) if BY_NAME.get(n) and BY_NAME[n].kind == kind]
 
-    given = _give(game, TROOP_ROWS, of("troop", cfg.donate_main), cfg.donate_fill, pictures, limit, plan)
     siege = of("siege", cfg.donate_siege)
-    if siege and _title_dy(game) is not None and given < limit:
-        # Siege machines sit at the end of the troop rows: only the ones picked.
-        given += _give(game, TROOP_ROWS, siege, False, pictures, limit - given, None if cfg.donate_siege else plan)
     spells = of("spell", cfg.donate_spells)
     # Spells: the ones picked; filling them too only when the request names
     # its units (then what's in colour is what it asked for).
     fill_spells = cfg.donate_fill and names_units(troops, spell_cards)
-    if (spells or fill_spells) and _title_dy(game) is not None and given < limit:
-        given += _give(game, SPELL_ROWS, spells, fill_spells, pictures, limit - given,
-                       None if cfg.donate_spells else plan)
+    steps = [(TROOP_ROWS, of("troop", cfg.donate_main), cfg.donate_fill, plan, False)]
+    if siege:
+        # Siege machines sit at the end of the troop rows: only the ones picked.
+        steps.append((TROOP_ROWS, siege, False, None if cfg.donate_siege else plan, True))
+    if spells or fill_spells:
+        steps.append((SPELL_ROWS, spells, fill_spells, None if cfg.donate_spells else plan, False))
+    given = 0
+    try:
+        for rows, main, fill, counts, to_end in steps:
+            if given >= limit:
+                break
+            given += _give(game, rows, main, fill, pictures, limit - given, counts, to_end)
+            if _title_on(game, game.screen if game.screen is not None else game.refresh()) is None:
+                break  # it closed: full
+    except Refused as refused:
+        given += refused.given
+        log.info("The request is full (the game turned a donation down): on to the next one")
     return given
