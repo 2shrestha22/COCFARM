@@ -16,7 +16,7 @@ from farmbot.config import WallsConfig
 from farmbot.game import Game, T
 from farmbot.geometry import Rect
 from farmbot.tasks.build_list import (LIST_BOTTOM_FROM_BOTTOM, LIST_PAGE, LIST_STEP, LIST_SWIPE_FROM_BOTTOM,
-                                      LIST_SWIPE_TO_Y, LIST_SWIPE_X, MAX_SORTED_SCROLLS, SLOW_SWIPE_MS,
+                                      LIST_SWIPE_X, LIST_TOP, MAX_SORTED_SCROLLS, SLOW_SWIPE_MS,
                                       asks_for_gems, free_builders, green_confirm, list_still, open_tab, set_filter,
                                       shows_gems)
 from farmbot.tasks.search import Loot
@@ -377,7 +377,6 @@ def wall_budget(use: str, loot: Loot, keep: dict[str, int]) -> list[str]:
 PRICE_RECHECK = 10  # rounds skipped for the price last seen before the list is looked at again
 MAX_WALLS = 100  # selected at once at most (as many as the spare covers, up to this)
 ROW_PITCH = 4.1  # rows are this many "Wall x" heights apart (82 px at 860 x 672)
-MAX_SCROLLS = 8  # long swipes to reach the walls
 MAX_STEPS = 6  # short swipes to reach the block's first or last wall
 ROW_BELOW = 1.6  # a row's price ends this many "Wall x" heights below its text
 # A row's price, in "Wall x" heights from the middle of its "Wall x" text.
@@ -407,11 +406,18 @@ def find_wall_entry(game: Game):
     x, y = w - LIST_SWIPE_X, h - LIST_SWIPE_FROM_BOTTOM
     bottom = h - LIST_BOTTOM_FROM_BOTTOM
     walls = _walls_in_view(game)
-    for _ in range(MAX_SCROLLS):
+    for _ in range(MAX_SORTED_SCROLLS):
         if walls:
             break
-        game.swipe(x, y, x, LIST_SWIPE_TO_Y)
+        before = game.screen.copy()
+        # Overlapping, slow pages keep a short wall block from being skipped.
+        distance = min(LIST_PAGE, max(1, y - LIST_TOP))
+        game.swipe(x, y, x, y - distance, duration_ms=SLOW_SWIPE_MS)
         walls = _walls_in_view(game)
+        if walls:
+            break
+        if list_still(before, game.screen):
+            return None
     else:
         return None
     for _ in range(MAX_STEPS):
@@ -419,10 +425,16 @@ def find_wall_entry(game: Game):
         # A whole row below the bottom wall that isn't a wall: it's the last.
         if walls[-1].y + pitch + walls[-1].h < bottom:
             return walls[-1]
-        game.swipe(x, y, x, y - LIST_STEP)
+        before = game.screen.copy()
+        game.swipe(x, y, x, y - LIST_STEP, duration_ms=SLOW_SWIPE_MS)
         moved = _walls_in_view(game)
         if not moved:
             return None  # went past the block: never tap where a wall used to be
+        if list_still(before, game.screen):
+            # In the builder base the cheapest wall can be the final row.
+            # No row below it will appear, even after another swipe.
+            last = moved[-1]
+            return last if last.y + round(ROW_BELOW * last.h) < bottom else None
         walls = moved
     return None
 
