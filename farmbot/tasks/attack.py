@@ -1700,13 +1700,15 @@ def mend_slid_pinch(game: Game) -> bool:
 
 
 def attack(game: Game, cfg: Config, target: Loot | None = None, room: dict[str, int] | None = None,
-           for_stars: bool = False, war_map: bool = False) -> float | None:
+           for_stars: bool = False, war_map: bool = False, village=None) -> float | None:
     """Attack the base on screen; ``target`` is its loot as scouted, and
     ``room`` what the storages still hold (the battle ends once that's taken).
     Returns the share of it taken, when the loot could be read.
     ``for_stars``: a ranked or war battle, fought for stars and percentage:
     it is never ended early over loot (see :func:`finish_battle`).
     ``war_map``: the base is on the clan war map (see :func:`deploy_edges`).
+    ``village``: the account's village export already kept, if any (a hero
+    walk goes by its Rocket Spear's level).
 
     The bar goes troops, siege machines, heroes, spells. When it holds more
     than fits on the screen, it's deployed a screenful at a time, in that
@@ -1883,7 +1885,7 @@ def attack(game: Game, cfg: Config, target: Loot | None = None, room: dict[str, 
         walked: list[Card] = []  # the walker: out already, her ability still to fire (if it didn't on the walk)
         if walking and page == 0:
             went = hero_walk.walk(game, cfg, singles, troops, [c for c in cards if c.kind == "spell"], counts,
-                                  troop_edges, sides, fixed_points)
+                                  troop_edges, sides, fixed_points, spear=hero_walk.spear_level(village))
             if went is not None:
                 singles = [c for c in singles if c is not went.hero]
                 troops = [c for c in troops if c not in went.healers]

@@ -2035,7 +2035,7 @@ class Bot:
         self.status("Attacking")
         self._pending = AttackRecord(self._now(), target, before)
         self._pending.taken = attack.attack(self.game, cfg, target, room=self._room(before, wanted),
-                                            for_stars=bonus is not None)
+                                            for_stars=bonus is not None, village=self.village)
         self._left_selected = False  # the battle dropped it
         self.attacks += 1
         self.attacks_today += 1
