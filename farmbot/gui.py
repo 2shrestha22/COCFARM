@@ -5283,8 +5283,13 @@ class FarmbotWindow(FluentWindow):
                     "Asks the clan for troops, then again as soon as the game lets you.")
         self.number(request, "clan.request_every_minutes", FIF.DATE_TIME, "If the timer can't be read",
                     "Minutes to wait between requests.", "min")
-        self.depends("clan.request_troops", "clan.request_every_minutes")
-        self._note(page, self._template_note("Donating", "Requesting troops"))
+        self.switch(request, "clan.empty_castle", FIF.DELETE, "Empty the Clan Castle to request again",
+                    "Before each request, removes the troops, spells and siege machine in the Clan Castle, so a "
+                    "request goes out again without attacking (for a clan's donated-and-received rules, or so "
+                    "clanmates earn XP). Both happen in the army window (Battle, Edit Army), and only once the "
+                    "request is free. What's removed is gone: attacks may go without Clan Castle troops.")
+        self.depends("clan.request_troops", "clan.request_every_minutes", "clan.empty_castle")
+        self._note(page, self._template_note("Donating", "Requesting troops", "Emptying the Clan Castle"))
 
     def _wars_tab(self, page: Page) -> None:
         war = page.add(badged(SettingCardGroup("Clan wars")))

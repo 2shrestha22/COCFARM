@@ -1213,12 +1213,21 @@ class Bot:
         clan.close_chat(self.game)
 
     def _request_troops(self) -> None:
-        now = self.game.clock()
-        # A little early: a cooldown that short is waited out in the chat.
-        if self._next_request is not None and now < self._next_request - clan.WAIT_OUT:
+        army = self.config.clan.empty_castle
+        # A little early through the chat: a cooldown that short is waited out there.
+        early = 0 if army else clan.WAIT_OUT
+        if self._next_request is not None and self.game.clock() < self._next_request - early:
             return
         self.status("Requesting troops")
-        _, wait = clan.request_troops(self.game, self.config.clan, close=False)
+        if army:
+            # From the army window: the Clan Castle emptied and the request sent in one
+            # trip, the chat not opened for it (its timer isn't read there).
+            if clan.request_from_army(self.game, self.config.clan) is False:
+                self._next_request = None  # still on cooldown: looked at again next round
+                return
+            wait = None
+        else:
+            _, wait = clan.request_troops(self.game, self.config.clan, close=False)
         # Back when the game's cooldown (read off the button) may be over, or
         # after the configured interval when it couldn't be read.
         self._next_request = self.game.clock() + (clan.soonest(wait) if wait

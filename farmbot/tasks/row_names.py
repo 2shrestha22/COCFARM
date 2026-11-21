@@ -35,13 +35,14 @@ HOME_BUILDINGS: dict[str, tuple[str, ...]] = {
     "Defenses": ("Cannon", "Archer Tower", "Mortar", "Air Defense", "Wizard Tower", "Air Sweeper", "Hidden Tesla",
                  "Bomb Tower", "X-Bow", "Inferno Tower", "Eagle Artillery", "Scattershot", "Builder's Hut",
                  "Spell Tower", "Monolith", "Multi-Archer Tower", "Ricochet Cannon", "Firespitter",
-                 "Multi-Gear Tower", "Revenge Tower", "Super Wizard Tower"),
+                 "Multi-Gear Tower", "Revenge Tower", "Super Wizard Tower", "Spiky Tower", "Firecracker Tower"),
     "Traps": ("Bomb", "Spring Trap", "Giant Bomb", "Air Bomb", "Seeking Air Mine", "Skeleton Trap", "Tornado Trap",
               "Giga Bomb"),
     "Resources": ("Gold Mine", "Elixir Collector", "Dark Elixir Drill", "Gold Storage", "Elixir Storage",
                   "Dark Elixir Storage"),
     "Army": ("Army Camp", "Barracks", "Dark Barracks", "Laboratory", "Spell Factory", "Dark Spell Factory",
-             "Workshop", "Pet House", "Blacksmith", "Hero Hall", "Clan Castle", "Helper Hut", "Crafting Station"),
+             "Workshop", "Pet House", "Blacksmith", "Hero Hall", "Clan Castle", "Helper Hut", "Crafting Station",
+             "Squad Barracks"),
 }
 PICKABLE = tuple(name for names in HOME_BUILDINGS.values() for name in names)
 # The home village laboratory's research that can be picked (the Army
@@ -49,14 +50,15 @@ PICKABLE = tuple(name for names in HOME_BUILDINGS.values() for name in names)
 HOME_RESEARCH: dict[str, tuple[str, ...]] = {
     "Troops": ("Barbarian", "Archer", "Giant", "Goblin", "Wall Breaker", "Balloon", "Wizard", "Healer", "Dragon",
                "P.E.K.K.A", "Baby Dragon", "Miner", "Electro Dragon", "Yeti", "Dragon Rider", "Electro Titan",
-               "Root Rider", "Thrower"),
+               "Root Rider", "Thrower", "Meteor Golem"),
     "Dark troops": ("Minion", "Hog Rider", "Valkyrie", "Golem", "Witch", "Lava Hound", "Bowler", "Ice Golem",
                     "Headhunter", "Apprentice Warden", "Druid", "Furnace"),
     "Spells": ("Lightning Spell", "Healing Spell", "Rage Spell", "Jump Spell", "Freeze Spell", "Clone Spell",
                "Invisibility Spell", "Recall Spell", "Revive Spell", "Poison Spell", "Earthquake Spell",
-               "Haste Spell", "Skeleton Spell", "Bat Spell", "Overgrowth Spell", "Ice Block Spell"),
+               "Haste Spell", "Skeleton Spell", "Bat Spell", "Overgrowth Spell", "Ice Block Spell", "Totem Spell",
+               "Heroic Spell"),
     "Siege machines": ("Wall Wrecker", "Battle Blimp", "Stone Slammer", "Siege Barracks", "Log Launcher",
-                       "Flame Flinger", "Battle Drill", "Troop Launcher"),
+                       "Flame Flinger", "Battle Drill", "Troop Launcher", "Sky Wagon"),
 }
 RESEARCHABLE = tuple(name for names in HOME_RESEARCH.values() for name in names)
 # Every other name the game has for a building, trap or hero (and a few

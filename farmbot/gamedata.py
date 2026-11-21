@@ -1,7 +1,8 @@
 """The game's names for the ids its village export uses (``data``).
 
 Generated from coc.py's static game data (coc/static/static_data.json);
-an id missing here (something newer) shows as "Building #N" and the like."""
+Newer ids (Town Hall 19's update, 16 Nov 2026) from ClashKing's static data
+(ClashKingInc/ClashKingAssets, 17 Nov 2026); an id missing here (something newer) shows as "Building #N" and the like."""
 
 BUILDINGS: dict[int, str] = {
     1000000: "Army Camp",
@@ -80,6 +81,10 @@ BUILDINGS: dict[int, str] = {
     1000093: "Helper Hut",
     1000097: "Crafting Station",
     1000102: "Super Wizard Tower",
+    1000105: "Guardian Shrine",
+    1000106: "Squad Barracks",
+    1000107: "Spiky Tower",
+    1000108: "Firecracker Tower",
 }
 
 TROOPS: dict[int, str] = {
@@ -180,6 +185,23 @@ TROOPS: dict[int, str] = {
     4000165: "The Disarmer",
     4000167: "Meteor Golem",
     4000177: "Meteor Golem",
+    4000109: "Ruin Witch",
+    4000185: "Elephant Rider",
+    4000188: "Sky Wagon",
+    4000190: "Yeti Undertaker",
+    4000194: "Totem Thrower",
+    4000195: "Barch Squad",
+    4000196: "Giant Wizard Squad",
+    4000197: "Wall Breaker Squad",
+    4000198: "Minion Squad",
+    4000199: "Balloon Squad",
+    4000200: "Golem Witch Squad",
+    4000201: "Hog Rider Squad",
+    4000202: "Miner Squad",
+    4000203: "Healer Squad",
+    4000204: "P.E.K.K.A Titan Squad",
+    4000205: "Dragons Squad",
+    4000206: "Baby Dragon Squad",
 }
 
 SPELLS: dict[int, str] = {
@@ -202,6 +224,8 @@ SPELLS: dict[int, str] = {
     26000098: "Revive Spell",
     26000109: "Ice Block Spell",
     26000120: "Totem Spell",
+    26000123: "Angry Spell",
+    26000153: "Heroic Spell",
 }
 
 HEROES: dict[int, str] = {
@@ -227,6 +251,7 @@ PETS: dict[int, str] = {
     73000010: "Spirit Fox",
     73000011: "Angry Jelly",
     73000016: "Sneezy",
+    73000017: "Greedy Raven",
 }
 
 EQUIPMENT: dict[int, str] = {

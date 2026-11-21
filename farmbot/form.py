@@ -162,6 +162,7 @@ FIELDS = [
     Field("clan.donate_fill", "bool"),
     Field("clan.donate_presets", "presets"),
     Field("clan.request_troops", "bool"),
+    Field("clan.empty_castle", "bool"),
     Field("capital.raid", "bool"),
     Field("capital.miner_heal_at", "percent", 10, 95),
     Field("capital.fortress_heal_at", "percent", 10, 95),

@@ -305,6 +305,16 @@ PICTURES: list[Picture] = [
             "Donating", folder=True),
     Picture(T.REQUEST, "Request", "Clan chat, bottom (right of Challenge): the castle with a plus.", "Requesting troops"),
     Picture(T.REQUEST_SEND, "Send request", "Request window: the word \"Send\".", "Requesting troops"),
+    Picture(T.EDIT_ARMY, "Edit Army", "Battle menu, bottom left: the words \"Edit Army\" on the green button.",
+            "Emptying the Clan Castle"),
+    Picture(T.CASTLE_ROW, "Clan Castle row", "Edit Army window, the Clan Castle's row: its first small icon "
+            "(the castle with a troop), left of the troop count.", "Emptying the Clan Castle"),
+    Picture(T.CASTLE_TRASH, "Clan Castle bin", "Edit Army window, with troops in the Clan Castle: the bin at the "
+            "right end of the Clan Castle's row.", "Emptying the Clan Castle"),
+    Picture(T.CASTLE_REQUEST, "Army window Request", "Edit Army window, right of Add, while a request is free: the "
+            "castle with the \"+\" bubble on the green button.", "Emptying the Clan Castle"),
+    Picture(T.REMOVE_TROOPS, "Remove troops?", "After tapping that bin: the title \"Remove troops?\".",
+            "Emptying the Clan Castle"),
     Picture(T.CAPITAL_BADGE, "Raid badge", "Home village, over the capital airship: the sword on the red badge "
             "(raids left; a gold sword for the bonus raid).", CAPITAL, folder=True),
     Picture(T.CAPITAL_COLLAPSE, "Fold event buttons", "Home village, bottom: the \"<\" at the end of the event "

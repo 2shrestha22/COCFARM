@@ -238,6 +238,11 @@ class T:
     OPEN_CHAT = "buttons/open_chat"
     CLOSE_CHAT = "buttons/close_chat"
     NO_CLAN = "buttons/no_clan"  # "Join A Clan" in the chat panel: not in a clan
+    EDIT_ARMY = "buttons/edit_army"  # battle menu, bottom left: "Edit Army" (opens the army window)
+    CASTLE_ROW = "buttons/castle_remove/castle_row"  # army window: the Clan Castle row's first icon (castle, troop)
+    CASTLE_TRASH = "buttons/castle_remove/trash"  # the bin at that row's right (only while the castle holds something)
+    CASTLE_REQUEST = "buttons/castle_remove/request"  # the army window's request button, free (a castle, a "+" bubble)
+    REMOVE_TROOPS = "buttons/castle_remove/title"  # the bin's question: "Remove troops?" (its Okay removes them)
     DONATE = "buttons/donate"
     CONFIRM = "buttons/confirm"  # "Confirm" on notices such as "The Event has ended"
     GEM = "icons/gem"  # a gem: a Confirm window showing one is never pressed

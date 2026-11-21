@@ -92,7 +92,7 @@ SEARCH_BY_TOWN_HALL = {1: 1_000, 2: 5_000, 3: 10_000, 4: 30_000, 5: 60_000, 6: 1
 # Town Hall 15 and up. Bases there offer a median 1.4M gold+elixir; replaying 194
 # scouted (4.2 s a Next) puts the most loot an hour at 1.2M-1.5M each (900k: about 13% less).
 SEARCH_TOP = 1_200_000
-MAX_TOWN_HALL = 18
+MAX_TOWN_HALL = 19
 # The amounts before 1.5.3: minimums still at one of these were never typed
 # in, so they move to the new ones.
 _OLD_BY_TOWN_HALL = {1: 1_000, 2: 3_000, 3: 10_000, 4: 25_000, 5: 50_000, 6: 80_000, 7: 120_000,
@@ -412,6 +412,10 @@ class ClanConfig:
 
     request_troops: bool = False
     request_every_minutes: int = 10  # only when the cooldown on the button can't be read
+    # Before each request, the troops, spells and siege machine in the Clan
+    # Castle are removed (Battle → Edit Army): the request goes out again
+    # without attacking (for a clan's donated-and-received rules, or donors' XP).
+    empty_castle: bool = False
     donate: bool = False
     # Troops to give first, in this order (names from farmbot/units.py, e.g.
     # "Super Barbarian"); then, with donate_fill, the space left goes to the

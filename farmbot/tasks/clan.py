@@ -15,6 +15,7 @@ import numpy as np
 
 from farmbot.config import ClanConfig
 from farmbot.game import Game, T
+from farmbot.vision import Rect
 
 log = logging.getLogger(__name__)
 
@@ -121,7 +122,9 @@ def request_troops(game: Game, cfg: ClanConfig, close: bool = True) -> tuple[boo
     """Clan chat → Request (next to Challenge) → Send. Returns whether a
     request went out, and how many seconds until the next one can (from the
     button's cooldown timer; ``None`` if unknown). A Request button with a
-    gem price is on cooldown and is never pressed."""
+    gem price is on cooldown and is never pressed. (With the Clan Castle
+    emptied first, the request goes from the army window instead:
+    ``request_from_army``.)"""
     missing = _missing(game, (T.OPEN_CHAT, T.CLOSE_CHAT, T.REQUEST, T.REQUEST_SEND))
     if missing:
         log.warning("Cannot request troops; missing pictures: %s", ", ".join(missing))
@@ -156,11 +159,150 @@ def request_troops(game: Game, cfg: ClanConfig, close: bool = True) -> tuple[boo
                 break
             last = wait
         log.info("The next request in %s", f"{wait / 60:.0f} min at most" if wait else "an unknown time")
+    elif _request_free(game):
+        log.info("The request didn't go out, though its button is free")
     else:
         log.info("Request is on cooldown%s", f" for {wait / 60:.0f} more min" if wait else "")
     if close:
         _close_chat(game)
     return sent, wait
+
+
+def _request_free(game: Game) -> bool:
+    game.refresh()
+    return game.find(T.REQUEST, region=game.region(REQUEST_AREA)) is not None
+
+
+# Emptying the Clan Castle: Battle → Edit Army → the bin on the castle's row
+# → "Remove troops?" Okay. The bin is taken only on the castle's own row
+# (another row's bin would remove the army or its spells). The same window
+# has a request button of its own, by Add: emptying and requesting are one
+# trip there, with no clan chat.
+CASTLE_EMPTY_PICTURES = (T.BATTLE, T.EDIT_ARMY, T.CASTLE_ROW, T.CASTLE_TRASH, T.REMOVE_TROOPS, T.OKAY, T.CLOSE)
+ROW_SLACK = 15  # px: the bin's middle this close to the castle row's, vertically
+ARMY_WAIT = 5.0  # s for the army window to open
+MENU_WAIT = 4.0  # s for the battle menu's Edit Army to show
+
+
+def _open_army(game: Game) -> Rect | None:
+    """Battle → Edit Army, from the village: the band of the army window's
+    Clan Castle row once it shows (``None`` if it doesn't, everything closed
+    again)."""
+    from farmbot import screens
+
+    # Edit Army shows as the menu opens, before its cards have slid in: tapped at once.
+    game.refresh()
+    if not (game.find(T.EDIT_ARMY) or game.click(T.BATTLE)) or not game.click_when_visible(T.EDIT_ARMY, MENU_WAIT):
+        log.info("Clan Castle: the battle menu's Edit Army didn't show")
+        screens.settle(game)
+        return None
+    row = game.wait_for(T.CASTLE_ROW, timeout=ARMY_WAIT)
+    if row is None:
+        log.info("Clan Castle: the army window didn't open")
+        _close_army(game)
+        return None
+    game.wait(0.4)  # the window's cards settle
+    game.refresh()
+    row = game.find(T.CASTLE_ROW) or row
+    return Rect(row.x, row.y - ROW_SLACK - row.h, game.size[0] - row.x, 2 * (ROW_SLACK + row.h))
+
+
+def _bins(game: Game, band: Rect) -> list:
+    middle = band.y + band.h // 2
+    return [m for m in game.find_all(T.CASTLE_TRASH, region=band) if abs(m.y - middle) <= ROW_SLACK]
+
+
+def _remove(game: Game, band: Rect) -> bool | None:
+    """In the open army window: the castle row's bin, then "Remove troops?"
+    Okay. True once removed, False if it held nothing, ``None`` if it
+    couldn't be done."""
+    bins = _bins(game, band)
+    if not bins:
+        log.info("Clan Castle: already empty")
+        return False
+    game.tap_match(max(bins, key=lambda m: m.x))
+    if game.wait_for(T.REMOVE_TROOPS, timeout=3) is None:
+        log.info("Clan Castle: the bin didn't ask to remove the troops")
+        return None
+    if not game.click_when_visible(T.OKAY, timeout=2):
+        log.info("Clan Castle: no Okay under \"Remove troops?\"")
+        return None
+    game.wait(0.8)
+    game.refresh()
+    gone = game.find(T.REMOVE_TROOPS) is None and not _bins(game, band)
+    log.info("Emptied the Clan Castle" if gone else "Clan Castle: its troops still show after Okay")
+    return gone or None
+
+
+def empty_castle(game: Game) -> bool | None:
+    """Remove what the Clan Castle holds (troops, spells, siege machine),
+    from the army window, and close it again. True once removed, False if
+    it held nothing (its bin isn't there), ``None`` if it couldn't be done."""
+    missing = _missing(game, CASTLE_EMPTY_PICTURES)
+    if missing:
+        log.warning("Cannot empty the Clan Castle; missing pictures: %s", ", ".join(missing))
+        return None
+    band = _open_army(game)
+    if band is None:
+        return None
+    try:
+        return _remove(game, band)
+    finally:
+        _close_army(game)
+
+
+def request_from_army(game: Game, cfg: ClanConfig) -> bool | None:
+    """Request from the army window (Battle, Edit Army), the Clan Castle
+    emptied first with ``cfg.empty_castle``: one trip, no clan chat. Only
+    while its request button is free (on cooldown it shows a gem price
+    and isn't the button's picture): nothing is removed then, the troops
+    would be lost with no request after. True once a request went out,
+    False while it's on cooldown (its timer isn't read: too small there),
+    ``None`` if it couldn't be done."""
+    missing = _missing(game, (*CASTLE_EMPTY_PICTURES, T.CASTLE_REQUEST, T.REQUEST_SEND))
+    if missing:
+        log.warning("Cannot request troops from the army window; missing pictures: %s", ", ".join(missing))
+        return None
+    _close_chat(game)  # (left open by the clan check)
+    band = _open_army(game)
+    if band is None:
+        return None
+    try:
+        if game.find(T.CASTLE_REQUEST) is None:
+            log.info("Request is on cooldown (the army window's request button isn't free)")
+            return False
+        if cfg.empty_castle:
+            _remove(game, band)
+            game.refresh()
+        if not game.click(T.CASTLE_REQUEST):
+            log.info("The army window's request button went")
+            return None
+        if not game.click_when_visible(T.REQUEST_SEND, timeout=4):
+            log.info("The request window didn't show its Send button")
+            return None
+        log.info("Requested Clan Castle troops (from the army window)")
+        game.wait_for(T.CASTLE_ROW, timeout=3, interval=0.3)  # (the request window closing)
+        return True
+    finally:
+        _close_army(game)
+
+
+def _close_army(game: Game) -> None:
+    """The army window's X, then the battle menu under it (Back closes it,
+    as ``screens.settle`` does): each as soon as it shows, not after a set
+    wait. Anything else left open goes to ``screens.settle``."""
+    from farmbot import screens
+
+    game.refresh()
+    if game.find(T.REMOVE_TROOPS) is None and game.find(T.CASTLE_ROW) is not None and game.click(T.CLOSE):
+        game.wait_for(T.FIND_MATCH, timeout=2, interval=0.3)
+    back = getattr(game.device, "back", None)
+    if back and game.find(T.FIND_MATCH) is not None:
+        back()
+        game.screen = None
+        if game.wait_for(T.BATTLE, timeout=3, interval=0.3) is not None:
+            return
+    screens.settle(game)
 
 
 def _send_request(game: Game) -> bool:
