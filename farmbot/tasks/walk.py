@@ -82,6 +82,8 @@ STILL = 15  # ...so with her standing (fighting: two sightings this many px apar
 # early, before the fox lets her go, on where she stands (seen this many s before its turn, at most)
 STILL_SEEN = 1.5
 STILL_SPAN = 0.7  # s apart at least, the two sightings that say she's standing
+STANDING = 5.0  # px a second at most her heading shows, standing (her sightings jitter a few px; walking,
+# 15-20): only then does a spell go on where she was seen a while ago (issue #30)
 SPELL_RADIUS = (60, 45)  # px across and up an Invisibility Spell's circle reaches (18 Nov); she's
 # hidden only inside it (18 Nov: walked 50 px on from a spell's spot, hit before the next was due)
 LEAD_SHARE = 0.5  # share of where she'd walk to by the time a spell lands that it goes ahead of her
@@ -108,7 +110,8 @@ SPEAR_HURT = 1.0  # her health at most for her ability, the Rocket Spear on her:
 # once she's first hurt, then spells cycled with the fox's turns)...
 SPEAR_EARLY_LEVEL = 9  # ...from this level of the spear on (by the village export): its reach is the same at
 # every level, but how many throws it boosts and by how much grow with it (Supercell's announcement of the
-# piece); lower, they do little, and her ability's kept for when she's hurt, as without it. The level is a
+# piece: supercell.com/en/games/clashofclans/blog/news/super-wall-breaker-spotlight-new-hero-equipment);
+# lower, fewer and weaker, so her ability's kept for when she's hurt, as without it. The level is a
 # judgement, not the game's (a third of an Epic piece's 27): an unknown level goes early, as before
 LOOK_EVERY = 0.1  # s between looks at her health (a screenshot is most of a look: 18 Nov, looks
 # 0.8-2 s apart sent spells 2-3 s after she'd been hit)
@@ -457,17 +460,26 @@ def _outside(spot: Point, centre: Point, screen) -> bool:
 
 
 def _heading(done: Walk) -> tuple[float, float] | None:
-    """Her walk in px a second, by her last sighting and one STILL_SPAN s or
-    more before it (looks a tenth of a second apart see her move a few px);
-    None without two such."""
+    """Her walk in px a second, by her last sighting and the oldest still
+    kept, STILL_SPAN s or more before it (looks a tenth of a second apart see
+    her move a few px, and a sighting's off by a few: over longer, that's
+    less of her heading); None without two such. Next to nothing (STANDING),
+    she's standing: none."""
     if not done.found or not done.track:
         return None
     t1, p1 = done.track[-1]
     older = [(t, p) for t, p in done.track if t1 - t >= STILL_SPAN]
     if not older:
         return None
-    t0, p0 = older[-1]
-    return (p1[0] - p0[0]) / (t1 - t0), (p1[1] - p0[1]) / (t1 - t0)
+    t0, p0 = older[0]
+    v = (p1[0] - p0[0]) / (t1 - t0), (p1[1] - p0[1]) / (t1 - t0)
+    return v if math.hypot(*v) > STANDING else (0.0, 0.0)
+
+
+def _standing(done: Walk) -> bool:
+    """She stood when last seen: still, and her heading next to nothing."""
+    v = _heading(done)
+    return done.found and done.still and v is not None and math.hypot(*v) <= STANDING
 
 
 def _now_at(done: Walk, now: float) -> Point | None:
@@ -501,12 +513,14 @@ def _ahead(done: Walk, now: float, screen) -> Point | None:
     if v is None:
         return here
     k = LEAD_SHARE * (SPELL_LAND + INVISIBLE_FOR / 2)
-    dx, dy = v[0] * k, v[1] * k
+    # (Measured from where she was last seen, by her heading since and the lead together: had she
+    # stopped there, she's still inside.)
+    dx, dy = here[0] - done.seen[0] + v[0] * k, here[1] - done.seen[1] + v[1] * k
     rx, ry = SPELL_RADIUS[0] * _scale(screen), SPELL_RADIUS[1] * _scale(screen)
     far = math.hypot(dx / rx, dy / ry)
     if far > LEAD_MOST:
         dx, dy = dx * LEAD_MOST / far, dy * LEAD_MOST / far
-    there = round(here[0] + dx), round(here[1] + dy)
+    there = round(done.seen[0] + dx), round(done.seen[1] + dy)
     if now - done.seen_at > FRESH and any(not _outside(there, m, screen) for m in done.missed_on):
         return None
     return there
@@ -757,8 +771,9 @@ def _watch(game: Game, cfg: Config, done: Walk, left: dict[int, int | None], nam
             # Where it would go: never an old sighting (issue #30: two spells on where she went
             # down, 130 px behind her; two on a sighting 340 px behind her).
             there = _ahead(done, now, screen) if due else None
-            if due and early and there is None and done.found and done.still:
-                # (In the fox's turn, on where she stood fighting as it took her: she's still there.)
+            if due and early and there is None and _standing(done) and done.seen not in done.missed_on:
+                # (In the fox's turn, on where she stood fighting as it took her: she's still there.
+                # Only standing by her heading, too: STILL lets a slow walk by.)
                 there = done.seen
             if due and there is None:
                 # Where she is isn't known (never found, seen too long ago, or not since a spell
