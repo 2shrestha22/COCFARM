@@ -7,7 +7,9 @@ herself: the pet needs nothing from the bot.)
 
 The bot reads her health on her card, and finds her on the field by the
 health bar over her head (it shows once she's hurt, in her card's colour);
-each Invisibility Spell goes where she was last seen."""
+each Invisibility Spell goes ahead of her along the way she's walking, only
+where she's just been seen (or, by her heading, where she's walked on to
+since): never on an old sighting, nor again where one missed her."""
 
 from __future__ import annotations
 
@@ -83,12 +85,19 @@ STILL_SPAN = 0.7  # s apart at least, the two sightings that say she's standing
 SPELL_RADIUS = (60, 45)  # px across and up an Invisibility Spell's circle reaches (18 Nov); she's
 # hidden only inside it (18 Nov: walked 50 px on from a spell's spot, hit before the next was due)
 LEAD_SHARE = 0.5  # share of where she'd walk to by the time a spell lands that it goes ahead of her
-# (she often stops at the next building: the whole way overshoots)
+# (she often stops at the next building: the whole way overshoots)...
+LEAD_MOST = 0.6  # ...the circle's middle this share of its reach ahead of where she is, at most: walking on, she
+# crosses the most of it; stopping (at a building), she's still well inside it (issue #30: put half a reach
+# ahead of where she was, she walked out of it in a second or two and was hit while thought hidden)
+PREDICT_FOR = 2.0  # s since she was seen, at most, that her heading still says where she's walked to (longer,
+# she may have turned or stopped: no spell till she's seen again; issue #30: spells went on sightings
+# 130-340 px behind her). A judgement, not the game's: she walks 15-20 px a second (FIELD_WALK's note)
 HIT_FLIGHT = 0.6  # s shots fired before the fox's turn keep landing in it
 HIT_SPAN, HIT_DROP = 1.2, 0.04  # her health down this much within this many s: she's being hit
-FRESH = 0.8  # s since she was seen that a spell goes on that sighting; older...
-SIGHT_WAIT = 0.6  # ...it waits this long at most to see her again (18 Nov: spells landed where she'd been)...
-SIGHT_LOW = 0.4  # ...but not at all once she's this low (18 Nov: at 26% she fell while it waited)
+FRESH = 0.8  # s since she was seen that a spell goes on that sighting; older, by her heading (PREDICT_FOR)...
+SIGHT_WAIT = 0.6  # ...after waiting this long at most to see her again (18 Nov: spells landed where she'd been)...
+SIGHT_LOW = 0.4  # ...but not at all once she's this low (18 Nov: at 26% she fell while it waited). With no
+# heading to go by, it waits till she's seen, low or not: a spell on an old spot misses (issue #30)
 HEALERS_UNREAD = 5  # Healers to send when the card's count isn't read
 FOX_LOOKS = 1.5  # s of looks the fox's clock is set by
 FOX_SLACK = 0.8  # s into its turn (or gap) and before its end, at least, that a look against its clock sets it
@@ -96,7 +105,11 @@ PET_SEEN, PET_DOWN = 0.2, 0.3  # her pet's picture this colourful at first; this
 SPEAR_LOOKS = 4.0  # s after she goes in that her equipment's looked for over her card
 SPEAR_HURT = 1.0  # her health at most for her ability, the Rocket Spear on her: at once, at the edge, far from
 # the defences (it throws at them from further than they reach her; the user, 19 Nov: use it early, then a spell
-# once she's first hurt, then spells cycled with the fox's turns)
+# once she's first hurt, then spells cycled with the fox's turns)...
+SPEAR_EARLY_LEVEL = 9  # ...from this level of the spear on (by the village export): its reach is the same at
+# every level, but how many throws it boosts and by how much grow with it (Supercell's announcement of the
+# piece); lower, they do little, and her ability's kept for when she's hurt, as without it. The level is a
+# judgement, not the game's (a third of an Epic piece's 27): an unknown level goes early, as before
 LOOK_EVERY = 0.1  # s between looks at her health (a screenshot is most of a look: 18 Nov, looks
 # 0.8-2 s apart sent spells 2-3 s after she'd been hit)
 
@@ -128,9 +141,12 @@ class Walk:
     looks: list = field(default_factory=list)  # (time, hidden) of late, her bar seen
     strongest: float | None = None  # her bar's strongest saturation seen (not hidden), green
     shown: int = 0  # looks running she's been seen not hidden
-    spear: bool = False  # the Rocket Spear's on her: her ability as she goes in
+    spear: bool = False  # the Rocket Spear's on her: her ability as she goes in (at SPEAR_EARLY_LEVEL or more)
+    spear_level: int | None = None  # ...its level, by the village export (None: not known)
     casts: list = field(default_factory=list)  # when each Invisibility Spell went
     maybe: tuple | None = None  # a pale sighting off from where she was, till a next look confirms it (time, spot)
+    missed_on: list = field(default_factory=list)  # where spells that missed her went
+    missed_at: float | None = None  # ...the last one found out when
 
     def __post_init__(self):
         self.fox_at = self.fox_at or self.began
@@ -366,15 +382,32 @@ def start_point(edges: dict[str, list[Point]], side: str) -> Point:
     return plan.nearest_point(edges, side, plan.middle(edges[side]))
 
 
+def spear_level(village) -> int | None:
+    """The Rocket Spear's level by the village export already kept (never
+    read for this), None without one. (The export lists an Epic piece at
+    level 1 whether it's had or not: it's only gone by once the spear's seen
+    on her.)"""
+    from farmbot import upgradable
+
+    return upgradable.item_levels(village, "equipment", ("Rocket Spear",)).get("Rocket Spear")
+
+
+def spear_early(level: int | None) -> bool:
+    """Whether her ability goes at once for the Rocket Spear at ``level``
+    (unknown: yes, as before levels were looked at)."""
+    return level is None or level >= SPEAR_EARLY_LEVEL
+
+
 def walk(game: Game, cfg: Config, singles: list[Card], troops: list[Card], spells: list[Card],
          counts: dict[Card, int | None], edges: dict[str, list[Point]], sides: list[str],
-         fallback=None) -> Walk | None:
+         fallback=None, spear: int | None = None) -> Walk | None:
     """The walk: the hero down (her Healers on her heels), then her health
     watched till she falls (``walk_time`` seconds at most). Once it drops to
     ``walk_invisibility_health`` an Invisibility Spell goes on her, and
     another each time one wears off, keeping her hidden while they last
     (the Spirit Fox's own invisibility first, if she has it). Returns what went out,
-    for the rest of the battle to leave alone; None if she didn't go."""
+    for the rest of the battle to leave alone; None if she didn't go.
+    ``spear``: the Rocket Spear's level, if known (:func:`spear_level`)."""
     from farmbot.tasks import attack as atk
 
     acfg = cfg.attack
@@ -396,7 +429,7 @@ def walk(game: Game, cfg: Config, singles: list[Card], troops: list[Card], spell
         return None
     # Her Spirit Fox's turns count from the tap that put her down (18 Nov: counted from before
     # placing, 3 s early, a spell went into the fox's own turn and was lost; from after its checks, late).
-    done = Walk(hero, side, start, tapped.get(id(hero), game.clock()), before=before, seen=start)
+    done = Walk(hero, side, start, tapped.get(id(hero), game.clock()), before=before, seen=start, spear_level=spear)
     log.info("%s walk: she goes in at %s on the %s side; the army follows once she falls (%.0f s at most)",
              name, start, side, acfg.walk_time)
     if acfg.hero_walk == "queen":
@@ -423,23 +456,78 @@ def _outside(spot: Point, centre: Point, screen) -> bool:
     return ((spot[0] - centre[0]) / rx) ** 2 + ((spot[1] - centre[1]) / ry) ** 2 > 1.0
 
 
-def _ahead(done: Walk, now: float, screen) -> Point:
-    """Where a spell goes: where she was last seen, a little ahead the way
-    she's walking (it lands SPELL_LAND s on), well inside its circle."""
+def _heading(done: Walk) -> tuple[float, float] | None:
+    """Her walk in px a second, by her last sighting and one STILL_SPAN s or
+    more before it (looks a tenth of a second apart see her move a few px);
+    None without two such."""
     if not done.found or not done.track:
-        return done.seen
+        return None
     t1, p1 = done.track[-1]
     older = [(t, p) for t, p in done.track if t1 - t >= STILL_SPAN]
-    if not older or now - t1 > STILL_SPAN:
-        return done.seen
+    if not older:
+        return None
     t0, p0 = older[-1]
-    k = LEAD_SHARE * (SPELL_LAND + now - t1) / (t1 - t0)
-    dx, dy = (p1[0] - p0[0]) * k, (p1[1] - p0[1]) * k
-    rx, ry = SPELL_RADIUS[0] * _scale(screen) / 2, SPELL_RADIUS[1] * _scale(screen) / 2
+    return (p1[0] - p0[0]) / (t1 - t0), (p1[1] - p0[1]) / (t1 - t0)
+
+
+def _now_at(done: Walk, now: float) -> Point | None:
+    """Where she is now: where she was just seen, or, seen a while ago
+    (PREDICT_FOR s at most), as far on as her heading has taken her since;
+    None if that's not known (never found, seen too long ago, or not since a
+    spell missed her: what it was aimed by was wrong)."""
+    if not done.found:
+        return None
+    age = now - done.seen_at
+    if age <= FRESH:
+        v = _heading(done) or (0.0, 0.0)
+        return round(done.seen[0] + v[0] * age), round(done.seen[1] + v[1] * age)
+    v = _heading(done)
+    if v is None or age > PREDICT_FOR or (done.missed_at is not None and done.seen_at < done.missed_at):
+        return None
+    return round(done.seen[0] + v[0] * age), round(done.seen[1] + v[1] * age)
+
+
+def _ahead(done: Walk, now: float, screen) -> Point | None:
+    """Where a spell goes: ahead of where she is now (:func:`_now_at`) the
+    way she's walking, for her to cross the most of its circle while it
+    lasts: by LEAD_SHARE of her walk till it's half over, LEAD_MOST of its
+    reach at most (she may stop at a building: still inside). None if where
+    she is isn't known: no spell on an old spot (issue #30), nor, by a guess,
+    in the circle of one that missed her."""
+    here = _now_at(done, now)
+    if here is None:
+        return None
+    v = _heading(done)
+    if v is None:
+        return here
+    k = LEAD_SHARE * (SPELL_LAND + INVISIBLE_FOR / 2)
+    dx, dy = v[0] * k, v[1] * k
+    rx, ry = SPELL_RADIUS[0] * _scale(screen), SPELL_RADIUS[1] * _scale(screen)
     far = math.hypot(dx / rx, dy / ry)
-    if far > 1.0:
-        dx, dy = dx / far, dy / far
-    return round(done.seen[0] + dx), round(done.seen[1] + dy)
+    if far > LEAD_MOST:
+        dx, dy = dx * LEAD_MOST / far, dy * LEAD_MOST / far
+    there = round(here[0] + dx), round(here[1] + dy)
+    if now - done.seen_at > FRESH and any(not _outside(there, m, screen) for m in done.missed_on):
+        return None
+    return there
+
+
+def _leaves(spot: Point, v: tuple[float, float] | None, centre: Point, screen) -> float | None:
+    """In how many s, walking on at ``v`` px a second from ``spot``, she's
+    out of the spell's circle round ``centre`` (0: out already); None if she
+    isn't walking."""
+    rx, ry = SPELL_RADIUS[0] * _scale(screen), SPELL_RADIUS[1] * _scale(screen)
+    x, y = (spot[0] - centre[0]) / rx, (spot[1] - centre[1]) / ry
+    if x * x + y * y > 1.0:
+        return 0.0
+    if v is None:
+        return None
+    vx, vy = v[0] / rx, v[1] / ry
+    a = vx * vx + vy * vy
+    if a < 1e-9:
+        return None
+    b, c = 2 * (x * vx + y * vy), x * x + y * y - 1.0
+    return (-b + math.sqrt(b * b - 4 * a * c)) / (2 * a)
 
 
 def _down(screen, hero: Card, cfg: Config, fired: bool = False) -> bool:
@@ -566,10 +654,14 @@ def _watch(game: Game, cfg: Config, done: Walk, left: dict[int, int | None], nam
             done.spear = hasattr(done.hero, "top") and any(armybar.shows_equipment(screen, done.hero, p)
                                                           for p in spears)
             if done.spear:
-                log.info("%s walk: the Rocket Spear on her", name)
+                lvl = done.spear_level
+                log.info("%s walk: the Rocket Spear on her (%s)%s", name,
+                         f"level {lvl}" if lvl is not None else "its level not known: as if strong",
+                         "" if spear_early(lvl) or not acfg.walk_spear_early
+                         else f": under level {SPEAR_EARLY_LEVEL}, her ability's kept for when she's hurt")
         fox = 0.0 if done.fox_down else level
-        if (done.spear and acfg.hero_abilities and acfg.walk_spear_early and not done.fired and health is not None
-                and health <= SPEAR_HURT):
+        if (done.spear and acfg.hero_abilities and acfg.walk_spear_early and spear_early(done.spear_level)
+                and not done.fired and health is not None and health <= SPEAR_HURT):
             # (Her spears at the defence that reached her, and those near it, standing off.)
             log.info("%s walk: health %.0f%%, far from the defences: her ability, for the Rocket Spear",
                      name, health * 100)
@@ -617,6 +709,16 @@ def _watch(game: Game, cfg: Config, done: Walk, left: dict[int, int | None], nam
                 log.info("%s walk: she walked out of the Invisibility Spell's circle (%s from %s)%s",
                          name, spot, done.cast_on, ": the fox hides her for now" if fox_turn else "")
                 hidden_until, done.cast_on = now, None
+            elif (spot is not None and now < hidden_until and done.cast_on is not None
+                  and now - done.cast_at >= COVER_FROM
+                  and (out := _leaves(spot, _heading(done), done.cast_on, screen)) is not None
+                  and out < SPELL_LAND + LOOK_EVERY and hidden_until + SPELL_LAND - now > out):
+                # Walking out of its circle before it wears off (it holds SPELL_LAND s past
+                # hidden_until, which is when the next is cast): the next goes now, ahead of her, to
+                # take hold as she leaves it (issue #30: cast once she was out, she was hit meanwhile).
+                log.info("%s walk: she'll walk out of the Invisibility Spell's circle in %.1f s (%s from %s): "
+                         "another ahead of her", name, out, spot, done.cast_on)
+                hidden_until = now
             elif (spot is not None and not hid and sighting.hue >= 0 and _family(sighting.hue) == "green"
                   and done.shown >= 2 and now < hidden_until
                   and done.cast_on is not None and now - done.cast_at >= SPELL_LAND + LOOK_EVERY):
@@ -624,13 +726,16 @@ def _watch(game: Game, cfg: Config, done: Walk, left: dict[int, int | None], nam
                 # Only a green bar's told apart, hidden or not: a red one's left to her health (19 Nov:
                 # at 33-38% and holding, red sightings sent three spells back to back; she fell for want).
                 log.info("%s walk: seen though her Invisibility Spell should hide her: another", name)
-                hidden_until, done.cast_on, done.missed = now, None, True
+                done.missed_on.append(done.cast_on)
+                hidden_until, done.cast_on, done.missed, done.missed_at = now, None, True, now
             if now < hidden_until and now - done.cast_at >= MISS_AFTER and done.held is None:
                 done.held = health
             elif now < hidden_until and done.held is not None and health <= done.held - MISS_DROP:
                 log.info("%s walk: health %.0f%% and dropping: the Invisibility Spell missed her",
                          name, health * 100)
-                hidden_until, done.missed = now, True
+                if done.cast_on is not None:
+                    done.missed_on.append(done.cast_on)
+                hidden_until, done.missed, done.missed_at = now, True, now
             spell = next((c for c in done.invisibility if left[id(c)] is None or left[id(c)] > 0), None)
             # Losing health, she's not hidden, whatever the fox's clock says (18 Nov: hit from 92% to
             # 76% in what its clock had for its turn, the spell waited for it to end).
@@ -649,22 +754,38 @@ def _watch(game: Game, cfg: Config, done: Walk, left: dict[int, int | None], nam
                    # Hidden now, with no spell on her and her health holding: the fox's turn the clock
                    # hasn't caught up with (it will in a look or two); not as it ends, though.
                    and not (hid and not hit and not early and not covered))
-            if due and not early and spot is None and done.found and now - done.seen_at > FRESH:
-                # Not seen of late: a look or two more for her; after a miss, till she's seen (the
-                # spot it went on was wrong). Low, at once (18 Nov: at 26% she fell meanwhile).
-                # Nor as the fox's gap closes: by the next look it's too late for one (18 Nov: at
-                # 51%, 1.2 s before the fox's turn, it waited and none went; she fell).
+            # Where it would go: never an old sighting (issue #30: two spells on where she went
+            # down, 130 px behind her; two on a sighting 340 px behind her).
+            there = _ahead(done, now, screen) if due else None
+            if due and early and there is None and done.found and done.still:
+                # (In the fox's turn, on where she stood fighting as it took her: she's still there.)
+                there = done.seen
+            if due and there is None:
+                # Where she is isn't known (never found, seen too long ago, or not since a spell
+                # missed her): none till she's seen, low or not; her ability's for her last stand.
+                if wanted is None:
+                    log.info("%s walk: health %.0f%%: an Invisibility Spell's due, but she %s: looking for "
+                             "her first", name, health * 100,
+                             "hasn't been seen yet" if not done.found else f"was last seen at {done.seen} "
+                             f"{now - done.seen_at:.1f} s ago")
+                wanted = now if wanted is None else wanted
+                due = False
+            elif due and not early and spot is None and now - done.seen_at > FRESH:
+                # Not seen of late, but her heading says where she's got to: a look or two more for
+                # her first. Low, at once (18 Nov: at 26% she fell meanwhile). Nor as the fox's gap
+                # closes: by the next look it's too late for one (18 Nov: at 51%, 1.2 s before the
+                # fox's turn, it waited and none went; she fell).
                 wanted = now if wanted is None else wanted
                 closing = fox and fox_gap(fox, now - done.fox_at)[1] < SPELL_WORTH + SIGHT_WAIT
-                due = health <= SIGHT_LOW or (not done.missed and (closing or now - wanted >= SIGHT_WAIT))
+                due = health <= SIGHT_LOW or closing or now - wanted >= SIGHT_WAIT
             if due:
                 wanted = None
                 if left[id(spell)] is None and armybar.is_spent(screen, spell, cfg.bar):
                     left[id(spell)] = 0
                 else:
-                    there = _ahead(done, now, screen)
                     log.info("%s walk: health %.0f%%: Invisibility Spell on %s (%s %s)%s", name, health * 100,
-                             there, "seen at" if spot is not None else "last seen at", done.seen,
+                             there, "seen at" if spot is not None else "last seen at" if now - done.seen_at <= FRESH
+                             else f"by her heading, {now - done.seen_at:.1f} s since she was seen at", done.seen,
                              ": to land as the fox's turn ends" if early else "")
                     game.tap(*spell.center)
                     game.wait(0.1)
