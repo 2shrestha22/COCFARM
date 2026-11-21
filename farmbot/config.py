@@ -705,6 +705,9 @@ class BuilderConfig:
     troop_abilities: bool = True
     ability_batch: int = 2  # troop abilities fired together
     ability_delay: float = 5.0  # seconds between batches
+    # Once the first base falls the game brings a second: played (on), or
+    # End Battle there (off: about a minute saved; its extra stars given up).
+    second_base: bool = True
     stage_delay: float = 2.0  # wait for the second base to settle before deploying
     speed_up: bool = True  # press the 1x button so the battle plays at 4x
     collect_resources: bool = True  # empty the builder base gold mines, elixir collectors and gem mine

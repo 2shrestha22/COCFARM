@@ -548,7 +548,15 @@ def _cards_like(game: Game, spells: list[Card], name: str) -> list[Card] | None:
 
 def spells_to_cast(game: Game, spells: list[Card], cfg: Config) -> list[Card]:
     """The spell cards to use: all of them, only the Bat Spells, or the
-    Bat Spells and Earthquakes (see :func:`quake_cards` for which those are)."""
+    Bat Spells and Earthquakes (see :func:`quake_cards` for which those are).
+    Never the Invisibility Spells: spread round the base they hide nothing
+    (a hero walk casts its own on the walker)."""
+    if not spells:
+        return spells
+    hidden = _cards_like(game, spells, T.INVISIBILITY_SPELL_CARD) or []
+    if hidden:
+        log.info("Leaving %d Invisibility Spell card(s) out: they only help on a hero walk", len(hidden))
+        spells = [c for c in spells if c not in hidden]
     if cfg.attack.spells == "all" or not spells:
         return spells
     bats = _cards_like(game, spells, T.BAT_SPELL_CARD)
@@ -2003,16 +2011,16 @@ def attack(game: Game, cfg: Config, target: Loot | None = None, room: dict[str, 
             if len(back) > len(placed):
                 placed = back
 
+    placed = abilities_to_fire(placed)
     if placed and acfg.hero_abilities:
-        # Heroes: a second tap fires the ability. Siege machines: it
-        # releases the troops inside.
+        # Heroes: a second tap fires the ability.
         # (Their clocks leave out the spells' wait for the push: the heroes were out meanwhile.)
         since = game.clock() - spells_held if led_at is None else led_at  # (heroes that led: from then)
         if acfg.ability_health > 0:
             fire_abilities_when_hurt(game, placed, cfg, since)
         else:
             fire_abilities_on_time(game, placed, cfg, since)
-        log.info("Activated %d hero/siege card(s)", len(placed))
+        log.info("Activated %d hero ability(s)", len(placed))
     game.refresh()
     speed_up(game, cfg)  # everything is down: troops, spells, heroes and siege (and their abilities)
     return finish_battle(game, cfg, target, room, for_stars, league)
@@ -2020,6 +2028,13 @@ def attack(game: Game, cfg: Config, target: Loot | None = None, room: dict[str, 
 
 ABILITY_CHECK = 0.5  # seconds between looks at the heroes' health
 SPELL_BEAT = 0.8  # human-like: about this long between the heroes and the spells
+
+
+def abilities_to_fire(placed: list[Card]) -> list[Card]:
+    """The placed cards tapped again for their ability: the heroes. Not the
+    siege machines: a second tap releases the troops inside and ends the
+    machine's own damage (they come out anyway once it falls)."""
+    return [c for c in placed if c.kind != "siege"]
 
 
 def fire_abilities_on_time(game: Game, cards: list[Card], cfg: Config, since: float | None = None) -> None:

@@ -5391,8 +5391,11 @@ class FarmbotWindow(FluentWindow):
                     "Presses the 1x button whenever it shows.")
         self.switch(battle, "builder.return_home_after", FIF.AIRPLANE, "Sail home when the bot stops",
                     "Ends in the home village rather than the builder base.")
+        self.switch(battle, "builder.second_base", FIF.SYNC, "Attack the second base too",
+                    "Off: ends the battle once the first base falls, a minute sooner (the second base's stars are given up).")
         self.number(battle, "builder.stage_delay", FIF.STOP_WATCH, "Wait before the second base",
                     "Seconds after the first base falls, while the second loads.", "s")
+        self.depends("builder.second_base", "builder.stage_delay")
 
     def _builder_village_tab(self, page: Page) -> None:
         loot = page.add(SettingCardGroup("Collecting"))

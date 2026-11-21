@@ -96,6 +96,7 @@ FIELDS = [
     Field("builder.troop_abilities", "bool"),
     Field("builder.ability_batch", "int", 1, 10),
     Field("builder.ability_delay", "float", 0, 60),
+    Field("builder.second_base", "bool"),
     Field("builder.stage_delay", "float", 0, 30),
     Field("builder.first_hero", "text"),
     Field("builder.switch_hero", "bool"),

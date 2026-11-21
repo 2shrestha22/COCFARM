@@ -158,6 +158,10 @@ PICTURES: list[Picture] = [
     Picture(T.BB_BUILDER_BOAT, "Boat home", "Builder base, top right: the boat's hull.", "Builder base"),
     Picture(T.BB_BATTLE, "Builder Battle", "Builder base, bottom left: the crossed axes.", "Builder base"),
     Picture(T.BB_FIND_NOW, "Find Now!", "Builder Start Attack window: the words \"Find Now!\".", "Builder base"),
+    Picture(T.BB_ATTACK_COOLDOWN, "Attack available in", "Builder Start Attack window after a battle left "
+            "early: the words \"Attack available\" over the timer where Find Now! goes.", "Builder base"),
+    Picture(T.BB_SEARCH_CANCEL, "Cancel (search)", "Builder base, \"Searching for opponents...\": the word "
+            "\"Cancel\" on the red button.", "Builder base"),
     Picture(T.CONFIRM, "Confirm", "A notice such as \"The Event has ended\": the word \"Confirm\" on its green "
             "button.", "Closing notices"),
     Picture(T.GEM, "Gem", "The home village's resource bar: the green gem icon beside your gem count.",

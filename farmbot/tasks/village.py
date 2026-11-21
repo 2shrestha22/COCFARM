@@ -16,7 +16,7 @@ from farmbot.config import WallsConfig
 from farmbot.game import Game, T
 from farmbot.geometry import Rect
 from farmbot.tasks.build_list import (LIST_BOTTOM_FROM_BOTTOM, LIST_PAGE, LIST_STEP, LIST_SWIPE_FROM_BOTTOM,
-                                      LIST_SWIPE_TO_Y, LIST_SWIPE_X, MAX_SORTED_SCROLLS, SLOW_SWIPE_MS,
+                                      LIST_SWIPE_X, LIST_TOP, MAX_SORTED_SCROLLS, SLOW_SWIPE_MS,
                                       asks_for_gems, free_builders, green_confirm, list_still, open_tab, set_filter,
                                       shows_gems)
 from farmbot.tasks.search import Loot
@@ -33,6 +33,8 @@ POPUP_BUTTONS = (T.TRY_AGAIN, T.RELOAD, T.RETURN_HOME, T.BB_RETURN_HOME, T.BB_OK
 CHEST_BELOW_WINDOW = 3.0
 CHEST_MAX_TAPS = 6
 CHEST_MAX_REWARDS = 8
+CHEST_TAP_GAP = 0.45  # s between taps on a chest (it shakes for about this long)
+CHEST_AFTER = 3.0  # s after a Continue for the next reward, chest or the village
 
 
 CHEST_MIDDLE = (0.5, 0.49)  # where a chest sits in a room without the window, in the screen's width and height
@@ -96,9 +98,11 @@ def open_event_chests(game: Game, limit: int = 3) -> int:
             x, y = round(game.size[0] * CHEST_MIDDLE[0]), round(game.size[1] * CHEST_MIDDLE[1])
         for _ in range(CHEST_MAX_TAPS):
             game.tap(x, y, jitter=5)
-            if game.wait_for(T.CONTINUE, timeout=1.5):
+            game.wait(CHEST_TAP_GAP, exact=True)  # (a look between taps: one more once it's open skips its reward)
+            game.refresh()
+            if game.find(T.CONTINUE):
                 break
-        if not game.find(T.CONTINUE):
+        if not game.find(T.CONTINUE) and not game.wait_for(T.CONTINUE, timeout=1.5):
             skip = chest_room(game, refresh=True)
             if skip is not None and skip[0].name.startswith(T.CHEST_SKIP):
                 log.info("The chest didn't open with taps: pressing Skip")
@@ -106,14 +110,31 @@ def open_event_chests(game: Game, limit: int = 3) -> int:
                 game.wait(1.5)
         if not game.click_when_visible(T.CONTINUE, timeout=10):
             log.info("No Continue button after the chest")
-        # A chest can hold several rewards, each with its own Continue.
-        for _ in range(CHEST_MAX_REWARDS):
-            game.wait(1)
-            if not game.click_when_visible(T.CONTINUE, timeout=3):
-                break
-        game.wait(2)
         opened += 1
+        # A chest can hold several rewards, each with its own Continue; done
+        # once the village shows; another chest is opened next.
+        if not _after_chest(game):
+            break
     return opened
+
+
+def _after_chest(game: Game) -> bool:
+    """After a chest's Continue: press each further reward's Continue until
+    the village shows. True if another chest is waiting to be opened."""
+    for _ in range(CHEST_MAX_REWARDS):
+        deadline = game.clock() + CHEST_AFTER
+        while True:
+            game.wait(0.3, exact=True)
+            game.refresh()
+            if game.find(T.BATTLE):
+                return False
+            if game.click(T.CONTINUE):
+                break
+            if chest_room(game) is not None:
+                return True
+            if game.clock() >= deadline:
+                return False
+    return False
 
 
 # "Pick a Reward!": event cards offered in battle (at 30%, 50% and 100%
@@ -397,7 +418,6 @@ def wall_budget(use: str, loot: Loot, keep: dict[str, int]) -> list[str]:
 PRICE_RECHECK = 10  # rounds skipped for the price last seen before the list is looked at again
 MAX_WALLS = 100  # selected at once at most (as many as the spare covers, up to this)
 ROW_PITCH = 4.1  # rows are this many "Wall x" heights apart (82 px at 860 x 672)
-MAX_SCROLLS = 8  # long swipes to reach the walls
 MAX_STEPS = 6  # short swipes to reach the block's first or last wall
 ROW_BELOW = 1.6  # a row's price ends this many "Wall x" heights below its text
 # A row's price, in "Wall x" heights from the middle of its "Wall x" text.
@@ -427,11 +447,18 @@ def find_wall_entry(game: Game):
     x, y = w - LIST_SWIPE_X, h - LIST_SWIPE_FROM_BOTTOM
     bottom = h - LIST_BOTTOM_FROM_BOTTOM
     walls = _walls_in_view(game)
-    for _ in range(MAX_SCROLLS):
+    for _ in range(MAX_SORTED_SCROLLS):
         if walls:
             break
-        game.swipe(x, y, x, LIST_SWIPE_TO_Y)
+        before = game.screen.copy()
+        # Overlapping, slow pages keep a short wall block from being skipped.
+        distance = min(LIST_PAGE, max(1, y - LIST_TOP))
+        game.swipe(x, y, x, y - distance, duration_ms=SLOW_SWIPE_MS)
         walls = _walls_in_view(game)
+        if walls:
+            break
+        if list_still(before, game.screen):
+            return None
     else:
         return None
     for _ in range(MAX_STEPS):
@@ -439,10 +466,16 @@ def find_wall_entry(game: Game):
         # A whole row below the bottom wall that isn't a wall: it's the last.
         if walls[-1].y + pitch + walls[-1].h < bottom:
             return walls[-1]
-        game.swipe(x, y, x, y - LIST_STEP)
+        before = game.screen.copy()
+        game.swipe(x, y, x, y - LIST_STEP, duration_ms=SLOW_SWIPE_MS)
         moved = _walls_in_view(game)
         if not moved:
             return None  # went past the block: never tap where a wall used to be
+        if list_still(before, game.screen):
+            # In the builder base the cheapest wall can be the final row.
+            # No row below it will appear, even after another swipe.
+            last = moved[-1]
+            return last if last.y + round(ROW_BELOW * last.h) < bottom else None
         walls = moved
     return None
 
@@ -472,8 +505,23 @@ def _price_rect(entry) -> Rect:
 
 
 def wall_price(game: Game, entry) -> int | None:
-    """The price on a "Wall x N" row of the list (right of it, a little lower)."""
-    return game.read_number(_price_rect(entry), T.LOOT_FONT)
+    """The price on a "Wall x N" row of the list (right of it, a little lower),
+    white or red (the game's red: short of one resource; the builder base's
+    walls take either, so the other may pay)."""
+    r = _price_rect(entry)
+    price = game.read_number(r, T.LOOT_FONT)
+    if price is None and game.screen is not None:
+        whitened = game.screen.copy()
+        box = whitened[max(r.y, 0):r.y + r.h, max(r.x, 0):r.x + r.w]
+        box[_red_digits(box)] = 255
+        price = game.vision.read_number(whitened, r, T.LOOT_FONT)
+    return price
+
+
+def _red_digits(box: np.ndarray) -> np.ndarray:
+    """The pixels of a price box in the game's red digits."""
+    b, g, red = (box[..., i].astype(np.int16) for i in range(3))
+    return (red > 150) & (red - g > 60) & (red - b > 60)
 
 
 RED_PRICE_SHARE = 0.05  # of the price's box in red digits: more than there is to pay with
@@ -777,6 +825,7 @@ def select_more(game: Game, count: int) -> int:
         ten = len(buttons) > 1 and count - selected >= 10
         game.tap_match(buttons[0] if ten else buttons[-1])
         selected += 10 if ten else 1
+        log.debug("Walls: +%d (%d of %d selected)", 10 if ten else 1, selected, count)
         game.wait(0.4)
     return selected
 

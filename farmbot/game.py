@@ -178,6 +178,8 @@ class T:
     BB_BOAT_MARKER = "builder/boat_marker"  # home village, a scenery whose boat looks different: the pin above it
     BB_BATTLE = "builder/battle"  # builder base Battle (crossed axes)
     BB_FIND_NOW = "builder/find_now"
+    BB_SEARCH_CANCEL = "builder/search_cancel"
+    BB_ATTACK_COOLDOWN = "builder/attack_cooldown"
     BB_BATTLE_STARTS = "builder/battle_starts"  # "Battle starts in:" before the first troop
     BB_BATTLE_ENDS = "builder/battle_ends"  # "Battle ends in:" once it started
     BB_RETURN_HOME = "builder/return_home"  # builder battle result
@@ -590,7 +592,7 @@ class Game:
         self.built_new = 0
         # Build list rows (resource, price) that wouldn't upgrade (no window,
         # a locked Town Hall), and until when (clock) they're passed over.
-        self.unupgradable: dict[tuple[str, int], float] = {}
+        self.unupgradable: dict[tuple, float] = {}  # (resource, price, look) -> until
 
     # -- timing ---------------------------------------------------------
     def uses(self, habit: str) -> bool:
@@ -906,7 +908,7 @@ class Game:
         stop = getattr(self.device, "stop_fast_taps", None)
         return bool(stop and stop())
 
-    def zoom_out(self, force: bool = False) -> bool:
+    def zoom_out(self, force: bool = False, quick: bool = False) -> bool:
         """Pinch the view all the way out, on devices that can. The game
         keeps its zoom between battles, and a zoomed-in view hides the
         map's edges where troops go. A pinch close in on a wall just
@@ -914,7 +916,12 @@ class Game:
         moves it, so whoever left one selected drops it first): one that
         did is dropped, and the view pinched again. ``force``: pinch even
         if the view looks like the one the last zoom-out ended on (it
-        turned out not to be zoomed out after all)."""
+        turned out not to be zoomed out after all). ``quick``: a view the
+        game opens at its own default zoom (a builder battle's stage): the
+        first pinch (it goes twice) takes it all the way out, so once it
+        plainly zoomed, no third pinch checks that the view stopped moving
+        (one the game missed is still told apart, and pinched again): a
+        village back from a battle, or a builder battle's stage."""
         pinch = getattr(self.device, "zoom_out", None)
         if pinch is None:
             return False
@@ -955,11 +962,16 @@ class Game:
                 # The first pinch changing nothing isn't enough: a pinch the
                 # game missed (LDPlayer misses some) looks just the same as
                 # one on a view already all the way out. A second one tells.
-                if view_change(before, after) < VIEW_STILL and i:
+                change = view_change(before, after)
+                if change < VIEW_STILL and i:
                     still = True
                     break
+                if quick and i == 0 and change >= VIEW_STILL:
+                    log.debug("Zoomed out (the game's default zoom: one pinch is enough)")
+                    still = True  # all the way out: kept as the view the zoom-out ended on
+                    break
                 before = after
-            if still and self._pinch_ignored(after):
+            if still and i and self._pinch_ignored(after):
                 return True
             if not self.deselect():
                 if still:

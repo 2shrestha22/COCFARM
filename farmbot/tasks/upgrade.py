@@ -41,19 +41,16 @@ import logging
 from dataclasses import replace
 from typing import Callable
 
-import numpy as np
-
 from farmbot.config import BuilderConfig, Config
 from farmbot.diag import FILE_ONLY
 from farmbot.game import Game, T
 from farmbot.tasks.build_list import (BUILDER, FAILED, HOME, HUD_SHIFT_PX, LOCKED, PLACED, BuildList, Row, busy,
-                                      find_row, first_affordable, picked_rows, forget_filters,
-                                      upgradable_names, free_builders, free_rows, goblins,
+                                      find_row, first_affordable, dearest_affordable, picked_rows, forget_filters, passed_over, skip_key,
+                                      upgradable_names, free_builders, free_lab, free_rows, goblins,
                                       leaving_town_hall, list_shown, open_tab, place_free, rows, set_filter, started,
                                       tab_free,
                                       top_row_affordable, town_hall_row, upgrade_row)
 from farmbot.tasks import equipment
-from farmbot.tasks.builder import restore_view
 from farmbot.tasks.helpers import APPRENTICE, LAB_ASSISTANT, assign_helper, needed
 from farmbot.upgradable import Survey
 from farmbot.tasks.search import Loot
@@ -257,7 +254,7 @@ def upgrade_builder_base(game: Game, bcfg: BuilderConfig, read_resources: Reader
                          kinds: list[str] | None = None, walls_after: bool | None = None) -> int:
     """The same in the builder base, for its ``full`` gold or elixir
     storages. Unless ``last`` (a battle comes next, which zooms out by
-    itself), what was upgraded is dropped and the camera put back. Returns
+    itself), what was upgraded is dropped and the view zoomed out. Returns
     how many upgrades were started. ``total``: the builder base's builders,
     from the village data (0: not known); with it, upgrades keep at most
     ``builder.upgrade_builders`` of them busy. ``report`` (a dict) gets,
@@ -271,35 +268,63 @@ def upgrade_builder_base(game: Game, bcfg: BuilderConfig, read_resources: Reader
     budget = _open(game, read_resources, full)
     if budget is None:
         return 0
-    view = game.refresh().copy()  # put back afterwards (there's no middle to centre on)
     done = 0
+    opened = False  # (shut, nothing was tapped: nothing to close or drop)
     try:
         forget_filters(game)  # a new round: its filters as the game has them, not known
-        if not _open_list(game):
-            return 0
         only_kinds = kinds
         kinds = [k for k in plan(bcfg.upgrade_order, builder_kinds(bcfg)) if only_kinds is None or k in only_kinds]
-        builders, free = 0, None
+        uses_builders = bool({"hero", "building"} & set(kinds))
+
+        def usable(free_: int | None) -> int:
+            return (_within(free_, total, bcfg.upgrade_builders) if total
+                    else _spare(free_, bcfg.walls if walls_after is None else walls_after))
+
+        # The counters over Build ("1/2" builders, "0/1" the Star Laboratory)
+        # first: with nothing free, the list isn't opened at all.
+        builders, free = 0, free_builders(game) if uses_builders else None
+        if free is not None:
+            builders = usable(free)
+        lab_busy = "research" in kinds and free_lab(game) == 0
+        if lab_busy:
+            log.info("Upgrades: the star laboratory is busy")
+            kinds.remove("research")
+        if uses_builders and free is not None and builders <= 0:
+            kinds = [k for k in kinds if k not in ("hero", "building")]
+        if report is not None:
+            if lab_busy:
+                report["lab_free"] = 0
+            if uses_builders and free is not None:
+                report["builders_left"] = builders
+        if not kinds:
+            log.info("Upgrades: nothing can start (no builder to use%s): the Build list stays shut",
+                     ", the star laboratory busy" if lab_busy else "")
+            return 0
+        if not _open_list(game):
+            return 0
+        opened = True
         if {"hero", "building"} & set(kinds):
-            # The builder base's counters are on the list's tabs.
             open_tab(game, "buildings", BUILDER)
-            free = tab_free(game, "buildings", BUILDER)
-            builders = (_within(free, total, bcfg.upgrade_builders) if total
-                        else _spare(free, bcfg.walls if walls_after is None else walls_after))
+            if free is None:  # (not read over Build: the list's tab has the same counter)
+                free = tab_free(game, "buildings", BUILDER)
+                builders = usable(free)
         left: dict = {}
         done = _in_order(game, kinds, BUILDER_SPEND, bcfg.upgrade_first, bcfg.upgrade_heroes, budget, builders,
                          read_resources, BUILDER, left=left)
         if report is not None:
-            report["builders_left"] = (left.get("builders", builders)
-                                       if {"hero", "building"} & set(kinds) and free is not None else None)
+            if {"hero", "building"} & set(kinds):
+                report["builders_left"] = left.get("builders", builders) if free is not None else None
             if left.get("research"):
                 report["lab_free"] = 0
             elif "research" in kinds:
                 report["lab_free"] = tab_free(game, "army", BUILDER) if _list_open(game, BUILDER) else None
     finally:
-        close_all_windows(game)
-        if not last:
-            _leave(game, view)
+        if opened:
+            close_all_windows(game)
+            # Walls next open the list themselves, which drops what's
+            # selected: no opening and shutting it in between to drop it.
+            if not last and not (walls_after if walls_after is not None else bcfg.walls):
+                _leave(game)
     return done
 
 
@@ -406,13 +431,13 @@ def _open_list(game: Game) -> bool:
     return True
 
 
-def _leave(game: Game, view: np.ndarray) -> None:
-    """Upgrading moved the camera to what was upgraded and zoomed in: zoom
-    out again, and drag it back to ``view``, a picture of the builder
-    base's (it holds two bases)."""
+def _leave(game: Game) -> None:
+    """Upgrading moved the camera to what was upgraded and zoomed in: drop
+    it and zoom out again. The camera isn't dragged back: what comes next
+    (walls, more upgrades) goes by the Build list, and the boat home is
+    looked for at the first base whatever the view."""
     deselect(game)  # a pinch on what's still selected would move it
     game.zoom_out()
-    restore_view(game, view)
 
 
 def _spend(game: Game, row: Row, budget: dict[str, int], read_resources: Reader, what: str,
@@ -430,7 +455,7 @@ def _spend(game: Game, row: Row, budget: dict[str, int], read_resources: Reader,
         budget[row.kind] = before - row.price
     else:
         if getattr(after, row.kind) >= before:
-            log.info("Upgrades: the %s didn't go through", what)
+            log.info("Upgrades: the upgrade (%s) didn't go through", what)
             return FAILED
         budget[row.kind] = getattr(after, row.kind)
     log.info("%s %s for %s %s", "Built" if outcome == PLACED else "Upgraded", what, f"{row.price:,}", row.kind)
@@ -496,7 +521,7 @@ def _town_hall(game: Game, money: list[str], budget: dict[str, int], read_resour
         log.info("Upgrades: %s", "the Town Hall costs more than the gold there is" if seen else
                  "no Town Hall upgrade in the list (under way already, or the top level)")
         return 0
-    if (row.kind, row.price) in _passed_over(game):
+    if passed_over(row, _passed_over(game)):
         return 0  # locked a moment ago: the game wants other buildings first
     if row.price > budget[row.kind]:
         log.info("Upgrades: the Town Hall costs %s %s, more than the %s there is", f"{row.price:,}", row.kind,
@@ -549,26 +574,48 @@ def _buildings(game: Game, kinds: list[str | None], money: list[str], budget: di
                 return done
             alone = group[0] if len(group) == 1 else None
             what_for = alone or " or ".join(group)
-            looked_for = (kind, group)
-            if only and _none_picked_lately(game, looked_for, budget):
+            # (The two villages' lists apart: their resources share names.)
+            looked_for = (f"builder base {kind}" if lst.builder_base else kind, group)
+            # Picked buildings, or heroes: a list that had none lately isn't
+            # looked through again until there's more to spend (or a while on).
+            remembers = bool(only) or kind == "hero"
+            if remembers and _none_picked_lately(game, looked_for, budget):
+                log.debug("Upgrades: no %s for %s lately; not looked for again yet", kind or "picks", what_for)
                 continue
+            # One resource, no picks: the list sorted from whichever end
+            # reached the row last time in fewer pages, at about this budget.
+            sorted_key = (lst.builder_base, kind, alone)
+            sort = _sort_for(game, sorted_key, budget[alone]) if alone and not only else T.SORT_COST_MAX
             if not set_filter(game, lst.resource_filter[alone] if alone else None, KIND_FILTER.get(kind),
-                              T.SORT_COST_MAX, lst):
+                              sort, lst):
                 if kind == "new":
                     log.info("Upgrades: nothing new to build for %s", what_for)
                 else:
                     log.info("Upgrades: no %s upgrade%s for %s in the list", kind or "building",
                              "" if kind else "s", what_for)
+                if kind == "hero":
+                    _none_picked(game, looked_for, budget)
                 continue  # nothing of that kind to upgrade
             spent = False
             skip = _passed_over(game)  # rows that wouldn't upgrade (lately): the next one
             failed = 0  # of those, the ones that weren't locked (a locked Town Hall doesn't count)
+            first_look = True
             while builders > 0 and failed < MAX_FAILED_ROWS:
-                if spent and alone and not _may_afford(game, alone, budget[alone], kind, lst):
+                if spent and alone and not _may_afford(game, alone, budget[alone], kind, lst, sort):
                     break
-                row = (first_affordable(game, {r: budget[r] for r in group}, lst, skip, only=only) if only else
-                       first_affordable(game, {r: budget[r] for r in group}, lst, skip))
+                pages: list[int] = []
+                if sort == T.SORT_COST_MIN:
+                    row = dearest_affordable(game, alone, budget[alone], lst, skip, pages)
+                elif only:
+                    row = first_affordable(game, {r: budget[r] for r in group}, lst, skip, only=only)
+                else:
+                    row = first_affordable(game, {r: budget[r] for r in group}, lst, skip, pages=pages)
+                if first_look and alone and not only:
+                    _sorted_pages(game, sorted_key, sort, sum(pages), budget[alone])
+                first_look = False
                 if row is None:
+                    if kind == "hero" and not spent and not only:
+                        _none_picked(game, looked_for, budget)
                     if only and not spent:
                         log.info("Upgrades: no %s of the buildings picked that %s covers",
                                  "new one" if kind == "new" else "upgrade", what_for)
@@ -581,7 +628,7 @@ def _buildings(game: Game, kinds: list[str | None], money: list[str], budget: di
                     return done
                 if not started(outcome):
                     seen["failed"] = True
-                    skip.add((row.kind, row.price))
+                    skip.add(skip_key(row))
                     _pass_over(game, row)
                     failed += outcome != LOCKED
                     continue
@@ -662,8 +709,9 @@ def _none_picked_lately(game: Game, looked_for: tuple, budget: dict[str, int]) -
     return True
 
 
-def _passed_over(game: Game) -> set[tuple[str, int]]:
-    """The rows that wouldn't upgrade in the last PASS_OVER_FOR seconds."""
+def _passed_over(game: Game) -> set[tuple]:
+    """The rows that wouldn't upgrade in the last PASS_OVER_FOR seconds:
+    (resource, price, look) each (see build_list.passed_over)."""
     rows_out = getattr(game, "unupgradable", None)
     if rows_out is None:
         return set()
@@ -676,14 +724,15 @@ def _passed_over(game: Game) -> set[tuple[str, int]]:
 def _pass_over(game: Game, row: Row) -> None:
     rows_out = getattr(game, "unupgradable", None)
     if rows_out is not None:
-        rows_out[(row.kind, row.price)] = game.clock() + PASS_OVER_FOR
+        rows_out[skip_key(row)] = game.clock() + PASS_OVER_FOR
 
 
-def _may_afford(game: Game, resource: str, left: int, kind: str | None, lst: BuildList) -> bool:
+def _may_afford(game: Game, resource: str, left: int, kind: str | None, lst: BuildList,
+                sort: str = T.SORT_COST_MAX) -> bool:
     """After an upgrade has spent most of the budget: the cheapest upgrade
     (sorted Cost Min, at the top) can be paid for. Saves scrolling the
     whole Cost Max list (a minute, at a big town hall) to find there is
-    none. The list is sorted Cost Max again if there may be one."""
+    none. The list is sorted ``sort`` again if there may be one."""
     if not game.has(T.SORT_COST_MIN):
         return True
     if not set_filter(game, lst.resource_filter[resource], KIND_FILTER.get(kind), T.SORT_COST_MIN, lst):
@@ -691,8 +740,43 @@ def _may_afford(game: Game, resource: str, left: int, kind: str | None, lst: Bui
     if top_row_affordable(game, (resource,), lst) is False:
         log.info("Upgrades: even the cheapest costs more than the %s %s left", f"{left:,}", resource)
         return False
-    set_filter(game, lst.resource_filter[resource], KIND_FILTER.get(kind), T.SORT_COST_MAX, lst)
+    if sort != T.SORT_COST_MIN:
+        set_filter(game, lst.resource_filter[resource], KIND_FILTER.get(kind), sort, lst)
     return True
+
+
+# A list's pages to the row last time, by sort, kept for a budget within
+# this factor of the one then (the storages are full each time: about the same).
+SORT_BUDGET_NEAR = 1.5
+
+
+def _sort_for(game: Game, key: tuple, amount: int) -> str:
+    """Cost Max or Cost Min for a list (``key``: village, kind, resource)
+    and ``amount`` to spend: the end the row was fewer pages from last time.
+    Nothing known: Cost Max (the row is at the top when most can be paid
+    for); known only for one end, and that took 2 pages or more: the other
+    end is tried once."""
+    if not game.has(T.SORT_COST_MIN):
+        return T.SORT_COST_MAX
+    known = {sort: pages for sort, (pages, had) in game.__dict__.get("sort_pages", {}).get(key, {}).items()
+             if had / SORT_BUDGET_NEAR <= amount <= had * SORT_BUDGET_NEAR}
+    most, least = known.get(T.SORT_COST_MAX), known.get(T.SORT_COST_MIN)
+    if most is None and least is None:
+        choice = T.SORT_COST_MAX
+    elif least is None:
+        choice = T.SORT_COST_MIN if most >= 2 else T.SORT_COST_MAX
+    elif most is None:
+        choice = T.SORT_COST_MAX if least >= 2 else T.SORT_COST_MIN
+    else:
+        choice = T.SORT_COST_MIN if least < most else T.SORT_COST_MAX
+    if choice == T.SORT_COST_MIN:
+        log.info("Upgrades: %s %s; sorted Cost Min (pages to the row last time: Cost Max %s, Cost Min %s)",
+                 f"{amount:,}", key[2], "?" if most is None else most, "?" if least is None else least)
+    return choice
+
+
+def _sorted_pages(game: Game, key: tuple, sort: str, pages: int, amount: int) -> None:
+    game.__dict__.setdefault("sort_pages", {}).setdefault(key, {})[sort] = (pages, amount)
 
 
 def _research(game: Game, money: list[str], budget: dict[str, int], read_resources: Reader, lst: BuildList,

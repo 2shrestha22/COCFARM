@@ -1761,9 +1761,15 @@ class Bot:
             return False
         if self._cart_due is None:
             self._cart_due = self.game.rng.randint(bcfg.cart_every_min, bcfg.cart_every_max)
-        if self._since_cart < self._cart_due:
+        due = self._since_cart >= self._cart_due
+        if "elixir" in self.full_storages("builder"):
+            # Nowhere for it to go: left for when the storage has room (still due).
+            log.info("Elixir cart: left for later (the elixir storage is full)")
             return False
-        cart = builder.collect_elixir_cart(self.game)
+        # Between visits, only a full cart (its tag on red) is collected: it's filling no more.
+        cart = builder.collect_elixir_cart(self.game, full_only=not due)
+        if not due and not cart:
+            return False
         self._since_cart = 0
         self._cart_due = self.game.rng.randint(bcfg.cart_every_min, bcfg.cart_every_max)
         return cart
@@ -1804,10 +1810,13 @@ class Bot:
         self.checkpoint()
         # The Clock Tower and the elixir cart are looked for on the first base,
         # where the boat lands: before collecting takes the view to the second
-        # base. Nothing after needs the view put back (walls and upgrades go
-        # by the Build list, the battle by its button, the boat home finds
-        # its way to the first base), which saves dragging it back.
+        # base. Collecting comes back to the first base by the same drags
+        # (an upgrade tapped in the list would send the camera across the
+        # map); nothing after drags the view back to a picture of it (walls
+        # and upgrades go by the Build list, the battle by its button, the
+        # boat home finds its way to the first base).
         # Both on the first base ("Village jobs in a new order": either first).
+        builder.back_to_first_base(self.game)
         carted: list[bool] = []
         for job in human.order(self.game.rng, [self._clock_tower, lambda: carted.append(self._elixir_cart())],
                                self.game.uses("chore_order")):
@@ -1924,7 +1933,7 @@ class Bot:
         self._since_break += 1
         log.info("Builder attack #%d done (%d stage(s))", self.attacks, result.stages)
         village.clear_popups(self.game)  # the Star Bonus window
-        self.game.zoom_out()
+        self.game.zoom_out(quick=True)  # back at the first base, at the game's default zoom
         after = self.read_resources()
         gained = None
         if before and after:
@@ -2043,7 +2052,7 @@ class Bot:
         log.info("Attack #%d done", self.attacks)
         # Read the gain as soon as we're home, so the last attack of a run
         # is logged with it too.
-        if self.game.wait_for(T.BATTLE, timeout=20, interval=1):
+        if self._home_after_battle():
             # The Star Bonus window opens a moment after the village shows
             # (its button "Claim" since November 2026, "Okay" before).
             closes = [name for name in (T.STAR_BONUS_CLAIM, T.OKAY) if self.game.has(name)]
@@ -2058,6 +2067,21 @@ class Bot:
                 self._settle_attack(after)
         self.status(f"Attack {self.attacks} done")
         return True
+
+    def _home_after_battle(self, timeout: float = 20) -> bool:
+        """Until the village shows after a battle, opening any event chest
+        that comes up first (one can follow the result a moment after Return
+        Home). True once the village shows."""
+        deadline = self.game.clock() + timeout
+        while True:
+            self.game.refresh()
+            if self.game.find(T.BATTLE):
+                return True
+            if village.in_chest_room(self.game) and village.open_event_chests(self.game):
+                continue
+            if self.game.clock() >= deadline:
+                return False
+            self.game.wait(1, exact=True)
 
     def _save_error_screen(self) -> None:
         """Keep what the bot was looking at when a round failed, for debugging."""
