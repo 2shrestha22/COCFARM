@@ -449,7 +449,7 @@ def _give(game: Game, rows, main: list[str], fill: bool, pictures, limit: int,
         coloured.update(c.name for c in cards if c.available)
         card = choose(cards, wanted(), fill)
         unseen = [] if asked else [n for n in wanted() if n not in seen]
-        if card is None and fill_behind():
+        if card is None and not unseen and fill_behind():
             # Paged on to a main unit that's grey there, and what can be
             # given was further back: back to the row's start to fill.
             went_back = True
