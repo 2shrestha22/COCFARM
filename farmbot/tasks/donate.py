@@ -2,8 +2,11 @@
 
 The window (Donation Resource) shows two rows of troop cards, with the
 siege machines at their end, and a row of spells; both scroll sideways.
-The bot pages along a row while a unit it wants hasn't shown yet, and
-flicks the troop rows to their end for the siege machines.
+The bot pages along a row while a unit it wants hasn't shown yet (not when
+the request names its units, nor when nothing on show is in colour: all
+further along is grey then), flicks the troop rows to their end for the
+siege machines, and back to their start to fill with what it paged past.
+A main unit that gets nothing is logged with why.
 A card in colour can be donated, a grey one can't (it doesn't fit, it's
 not unlocked, or there's no resource for it; when a request names units,
 those come first in the window and are the only ones in colour). Each tap
@@ -44,6 +47,7 @@ TROOP_ROWS = ((268, 382), (386, 500))
 SPELL_ROWS = ((553, 667),)
 PANEL_X = (455, 1125)
 GAP_BGR = np.array([205, 210, 210])  # the light grey between cards
+GAP_RUN = 3  # px: a gap is at least this wide (about 5); a thinner run is a card's own light grey (a greyed-out one has plenty)
 CARD_W = (78, 92)
 ART = (0.05, 0.5, 0.06, 0.94)  # the card's picture: top, bottom, left, right shares (no level, no price)
 SAME_UNIT = 0.7  # picture likeness to name a card
@@ -120,9 +124,22 @@ def _columns(screen: np.ndarray, y0: int, y1: int) -> list[tuple[int, int]]:
     """Left and right edge of each whole card in a row, from the gaps between them."""
     x0, x1 = PANEL_X
     band = screen[y0 + 7:y1 - 7, x0:x1].astype(np.int16)
-    gap = (np.abs(band - GAP_BGR).max(axis=2) < 14).mean(axis=0) > 0.5
+    gap = list((np.abs(band - GAP_BGR).max(axis=2) < 14).mean(axis=0) > 0.5)
+    # A greyed-out card's picture can have a stripe as light as the gap:
+    # not a gap unless it's as wide as one (or the card is split and lost).
+    i = 0
+    while i < len(gap):
+        if gap[i]:
+            end = i
+            while end < len(gap) and gap[end]:
+                end += 1
+            if end - i < GAP_RUN and 0 < i and end < len(gap):
+                gap[i:end] = [False] * (end - i)
+            i = end
+        else:
+            i += 1
     out, start = [], None
-    for i, is_gap in enumerate(list(gap) + [True]):
+    for i, is_gap in enumerate(gap + [True]):
         if not is_gap and start is None:
             start = i
         elif is_gap and start is not None:
@@ -249,6 +266,8 @@ COUNTERS = ((455, 238, 320, 26), (455, 518, 320, 26), (455, 712, 670, 100))  # x
 CHANGED = 40  # a pixel this much brighter or darker in any channel has changed...
 CHANGED_PIXELS = 4  # ...and this many of them is a donation that went through (a still window changes none: one thin digit is enough)
 TAP_LOOKS = (0.12, 0.15, 0.2, 0.3)  # s between looks for a tap's donation to show (0.77 s in all)
+# The first of them is the pause before the next tap too: a person's, so it
+# follows "Waits run a touch longer" and tiredness (the others are polls).
 OPEN_LOOKS = 6  # looks (0.15 s apart) for the window's cards to show once it opens
 
 # Scrolling a row of cards sideways. A drag that slows to a stop before it
@@ -262,7 +281,7 @@ FLICK_MS = 160
 SCROLL_SETTLE = 0.25  # s before the first look at a row let go of...
 STILL_LOOKS = 8  # ...then looks (0.1 s apart) until it's at rest: two the same
 ROW_RESTING = 1.0  # mean change of the row's pixels between two looks below which it's at rest
-MAX_PAGES = 16  # drags along one row at most
+MAX_PAGES = 16  # drags along one row at most (flicks to its end or start too)
 ROW_STILL = 3.0  # mean change of the row's pixels below which a drag moved nothing: its end
 
 
@@ -307,11 +326,11 @@ def _row_band(rows, dy: int) -> tuple[int, int]:
 
 
 def _drag_row(game: Game, rows, dy: int, distance: int, ms: int, slow_end: bool) -> None:
-    """Drag a row of cards ``distance`` px to the left, along the gap
-    between the two troop rows (or a spell card's top edge): long enough
-    never to read as a tap on a card."""
+    """Drag a row of cards ``distance`` px to the left (negative: to the
+    right, back to its start), along the gap between the two troop rows (or
+    a spell card's top edge): long enough never to read as a tap on a card."""
     y = ((rows[0][1] + rows[1][0]) // 2 if len(rows) > 1 else rows[0][0] + 10) + dy
-    x1 = PANEL_X[1] - 50
+    x1 = PANEL_X[1] - 50 if distance > 0 else PANEL_X[0] + 50
     x2 = x1 - distance
     drag = getattr(game.device, "drag", None)
     if slow_end and drag is not None:
@@ -347,14 +366,16 @@ def _at_rest(game: Game, rows, dy: int) -> np.ndarray:
     return last
 
 
-def scroll_row(game: Game, rows, dy: int, to_end: bool = False) -> np.ndarray | None:
-    """Move a row of cards on (a page, or a flick towards its end); the
-    screen after, or ``None`` if it didn't move (it was at its end) or the
-    window closed."""
+def scroll_row(game: Game, rows, dy: int, to_end: bool = False, back: bool = False) -> np.ndarray | None:
+    """Move a row of cards on (a page, or a flick towards its end; ``back``:
+    a flick towards its start); the screen after, or ``None`` if it didn't
+    move (it was at that end) or the window closed."""
     before = game.screen if game.screen is not None else game.refresh()
     y0, y1 = _row_band(rows, dy)
     x0, x1 = PANEL_X
-    if to_end:
+    if back:
+        _drag_row(game, rows, dy, -FLICK, FLICK_MS, slow_end=False)
+    elif to_end:
         _drag_row(game, rows, dy, FLICK, FLICK_MS, slow_end=False)
     else:
         _drag_row(game, rows, dy, PAGE_DRAG, PAGE_MS, slow_end=True)
@@ -365,39 +386,76 @@ def scroll_row(game: Game, rows, dy: int, to_end: bool = False) -> np.ndarray | 
     return after if moved >= ROW_STILL else None
 
 
+def _flick_along(game: Game, rows, dy: int, back: bool = False) -> np.ndarray:
+    """Flick a row to its end (``back``: its start) until it stops moving;
+    the screen after."""
+    for _ in range(MAX_PAGES):
+        if scroll_row(game, rows, dy, to_end=not back, back=back) is None:
+            break
+    return game.screen if game.screen is not None else game.refresh()
+
+
 def _give(game: Game, rows, main: list[str], fill: bool, pictures, limit: int,
-          counts: dict[str, int | None] | None = None, to_end: bool = False) -> int:
+          counts: dict[str, int | None] | None = None, to_end: bool = False, asked: bool = False) -> int:
     """Donate from one set of rows (troops or spells) until nothing more
     should or can be given; with ``counts``, at most that many of each main
     unit (``None``: as many as fit). The row is paged through while a main
-    unit wanted hasn't shown yet (what a request names leads the row, in
-    colour); ``to_end`` goes to the row's end first (the siege machines).
+    unit wanted hasn't shown yet; ``to_end`` goes to the row's end first
+    (the siege machines). ``asked``: the request names its units (they lead
+    the row, in colour), so the row isn't paged: what's further is grey.
     Each tap is checked to have given a unit: one that didn't raises
-    :class:`Refused`. Returns how many units were given."""
+    :class:`Refused`. Returns how many units were given; a main unit that
+    got none is logged with why."""
     left = {name: count for name, count in (counts or {}).items() if count is not None}
 
     def wanted() -> list[str]:
         return [n for n in main if left.get(n, 1) > 0]
 
     given = pages = 0
-    seen: set[str | None] = set()
+    seen: set[str | None] = set()  # every unit on show so far (paging stops once the wanted ones have)
+    coloured: set[str | None] = set()  # ...and the ones of them in colour
+    gave: dict[str | None, int] = {}
+    went_back = False
+
+    def fill_behind() -> bool:
+        # Filling would give something seen in colour on a page left behind.
+        return fill and pages > 0 and not went_back and any(
+            n not in main and not (n in BY_NAME and BY_NAME[n].kind == "siege") for n in coloured)
+
     screen = game.refresh()
     dy = _title_on(game, screen)
     if dy is not None and to_end:
-        for _ in range(4):
-            moved = scroll_row(game, rows, dy, to_end=True)
-            if moved is None:
-                break
-            screen = moved
-        screen = game.screen if game.screen is not None else game.refresh()
+        # Straight to the row's end, unless what's wanted is in colour
+        # where the window opens (a request that names it may put it first).
+        here = read_cards(screen, rows, pictures, dy)
+        if not any(c.available and c.name in main for c in here):
+            screen = _flick_along(game, rows, dy)
+    elif dy is not None and not any(c.available for c in read_cards(screen, rows, pictures, dy)):
+        # Nothing in colour where the window opens, the cheapest units
+        # included: this kind's room is full (or there's no elixir).
+        # Paging on would find only grey cards.
+        if main or fill:
+            kind = "spell" if rows == SPELL_ROWS else "troop"
+            log.info("No %s can be given: every card is greyed out (%s)", kind,
+                     f"the request asks for no {kind}s" if asked
+                     else "the request has no room left for them, or there isn't the elixir")
+        return 0
     while given < limit:
         dy = _title_on(game, screen)
         if dy is None:
             break  # the window closed: the request is full
         cards = read_cards(screen, rows, pictures, dy)
         seen.update(c.name for c in cards)
+        coloured.update(c.name for c in cards if c.available)
         card = choose(cards, wanted(), fill)
-        unseen = [n for n in wanted() if n not in seen]
+        unseen = [] if asked else [n for n in wanted() if n not in seen]
+        if card is None and fill_behind():
+            # Paged on to a main unit that's grey there, and what can be
+            # given was further back: back to the row's start to fill.
+            went_back = True
+            seen.update(wanted())
+            screen = _flick_along(game, rows, dy, back=True)
+            continue
         if card is None or (card.name not in main and unseen):
             # A main unit wanted may be further along the row: page on to
             # it (filling waits until every one has shown, or the row ends).
@@ -408,9 +466,9 @@ def _give(game: Game, rows, main: list[str], fill: bool, pictures, limit: int,
             if moved is not None:
                 screen = moved
                 continue
-            if card is None:
+            if card is None and not fill_behind():
                 break
-            seen.update(wanted())  # the row's end: fill from here
+            seen.update(wanted())  # the row's end: fill from here (or from its start, above)
             continue
         name = card.name
         log.info("Donating %s", name or "an unknown unit")
@@ -420,8 +478,8 @@ def _give(game: Game, rows, main: list[str], fill: bool, pictures, limit: int,
             game.tap(*card.center)
             game.screen = None
             after = screen
-            for pause in TAP_LOOKS:
-                game.wait(pause, exact=True)
+            for i, pause in enumerate(TAP_LOOKS):
+                game.wait(pause, exact=i > 0)
                 after = game.refresh()
                 if _title_on(game, after) != dy or went_through(screen, after, dy):
                     break
@@ -438,6 +496,7 @@ def _give(game: Game, rows, main: list[str], fill: bool, pictures, limit: int,
                 retried, card, screen = True, again, after
                 continue
             given += 1
+            gave[name] = gave.get(name, 0) + 1
             if name in left:
                 left[name] -= 1
             screen = after
@@ -445,7 +504,24 @@ def _give(game: Game, rows, main: list[str], fill: bool, pictures, limit: int,
             card = next((c for c in here if c.name == name and c.available and abs(c.x - card.x) < 20), None)
             if card is None or choose(here, wanted(), fill) != card:
                 break  # greyed out, given enough, or something better is on show now
+    if given < limit and _title_on(game, game.screen if game.screen is not None else game.refresh()) is not None:
+        for name in main:
+            if not gave.get(name):
+                log.info("Not donating %s: %s", name, why_not(name, seen, coloured, asked, fill))
     return given
+
+
+def why_not(name: str, seen: set, coloured: set, asked: bool, fill: bool) -> str:
+    """Why a main unit got nothing, as far as the window tells: no card for
+    it, or a grey one (which looks the same whatever the reason)."""
+    if name in coloured:
+        return "the request had no room left for it"
+    if name not in seen and not asked:
+        return "no card for it in the window (not unlocked yet, or its picture wasn't recognised)"
+    if asked:  # (grey, or further along the row, which isn't paged through then)
+        return ("greyed out: the request asks for other units" +
+                ("" if fill else " (\"Fill the rest\" is off, so those aren't given either)"))
+    return "greyed out: no room left for it in the request, not unlocked, or not enough elixir / dark elixir"
 
 
 def wait_for_cards(game: Game) -> int | None:
@@ -489,9 +565,15 @@ def donate_open_window(game: Game, cfg: ClanConfig, request: np.ndarray | None =
 
     siege = of("siege", cfg.donate_siege)
     spells = of("spell", cfg.donate_spells)
+    # A request that names its units has them first in colour, the rest
+    # grey: the rows aren't paged through then (nothing further can be given).
+    asked = names_units(troops, spell_cards)
+    if asked:
+        log.info("The request names the units it wants: %s", ", ".join(sorted(
+            {c.name or "an unknown unit" for c in troops + spell_cards if c.available})))
     # Spells: the ones picked; filling them too only when the request names
     # its units (then what's in colour is what it asked for).
-    fill_spells = cfg.donate_fill and names_units(troops, spell_cards)
+    fill_spells = cfg.donate_fill and asked
     steps = [(TROOP_ROWS, of("troop", cfg.donate_main), cfg.donate_fill, plan, False)]
     if siege:
         # Siege machines sit at the end of the troop rows: only the ones picked.
@@ -503,7 +585,7 @@ def donate_open_window(game: Game, cfg: ClanConfig, request: np.ndarray | None =
         for rows, main, fill, counts, to_end in steps:
             if given >= limit:
                 break
-            given += _give(game, rows, main, fill, pictures, limit - given, counts, to_end)
+            given += _give(game, rows, main, fill, pictures, limit - given, counts, to_end, asked)
             if _title_on(game, game.screen if game.screen is not None else game.refresh()) is None:
                 break  # it closed: full
     except Refused as refused:
