@@ -495,7 +495,7 @@ def _wait_for_base(game: Game, timeout: float = NEXT_TIMEOUT) -> bool:
         if _unable_to_attack(game):
             raise _blocked(game, "its words")
         if game.clock() - tapped >= ARMY_RETAP and game.has(T.ARMY_ATTACK) and game.click(T.ARMY_ATTACK):
-            # the army window still up: its Attack! tap went unanswered (BOB, 18 Nov 2026)
+            # the army window still up: its Attack! tap went unanswered (18 Nov 2026)
             tapped = game.clock()
             log.info("The army window's Attack! didn't answer: tapped it again")
             continue

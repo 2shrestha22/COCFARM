@@ -276,7 +276,7 @@ EQUIPMENT: dict[int, str] = {
 }
 # (Newer than coc.py's data, 18 Nov 2026: the Dragon Duke, Monolith Arrow and the pieces from 52 on, by
 # the id tables of four other tools that read the export. They agree but on 16 and 59, split two and two
-# between Monolith Arrow and Electro Fangs: Bix's export (Blacksmith 7) holds 16 but not 59, nor Stun
+# between Monolith Arrow and Electro Fangs: an account's export (Blacksmith 7) holds 16 but not 59, nor Stun
 # Blaster (Blacksmith 9), and Electro Fangs needs Blacksmith 10, so 16 is taken for Monolith Arrow. 62
 # and 63, in the exports but named nowhere yet, show as "Equipment #N".)
 

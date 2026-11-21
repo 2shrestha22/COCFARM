@@ -4794,8 +4794,16 @@ class FarmbotWindow(FluentWindow):
                     "On: the battle ends once the loot taken fills your storages (the ones picked under When "
                     "these storages are full, or all of them), since the rest couldn't be kept. Off: the battle "
                     "goes on (for stars, trophies or the rest of the base) until the other rules below end it.")
-        self.switch(end, "attack.speed_up", Glyph.FAST, "Play the last minute at 4x",
-                    "Presses the 1x button when it shows, with a minute of the battle left.")
+        self.switch(end, "attack.speed_up", Glyph.FAST, "Play battles at 4x",
+                    "Presses the 1x button as soon as it shows, while the army goes down.")
+        self.switch(end, "attack.league_bonus", Glyph.TROPHY, "League bonus farming",
+                    "The fastest farming in a high league: every base is attacked (no search minimums), the "
+                    "whole army goes down at once round the base, the heroes' abilities straight away, and the "
+                    "battle is left once the Overall Damage reaches the share below, where the league bonus is "
+                    "paid in full. Daily Star Bonus battles are still fought for stars.")
+        self.number(end, "attack.league_bonus_damage", FIF.COMPLETED, "Leave at this damage",
+                    "Overall Damage to reach before leaving (70% pays the full league bonus).", "%")
+        self.depends("attack.league_bonus", "attack.league_bonus_damage")
         self.switch(end, "attack.star_bonus", Glyph.TROPHY, "Earn the daily Star Bonus",
                     "Until the day's five stars are lit (the strip above Battle), battles are fought for stars "
                     "and never left early over loot. The bonus loot goes to the Clan Castle's treasury.")

@@ -58,6 +58,13 @@ UPDATE_LOOK = 10.0  # seconds of an unknown screen while loading before its word
 # started then is closed again: start it once Android has been up this long.
 BOOT_SETTLE = 20.0
 START_TRIES = 3  # starts of the game, if it closes while loading
+RECENTRE = True  # TEMPORARY: put the village back in the middle before map jobs (see Bot._centred)
+RECENTRE_RETIRE = 10  # rounds in a row the village came back centred by itself: then no longer looked at
+SETTLED_READ_WAIT = 10.0  # s at most for the resources to settle after the Star Bonus is claimed
+SETTLED_READ_GAP = 1.5  # s between those readings
+REFOCUS_SETTLE = 3.0  # s for the game to come back from the background
+PINCH_REOPENS = 3  # reopenings of the game for a pinch that moved the view, at most this many...
+PINCH_REOPEN_WINDOW = 3600.0  # ...in this many seconds: the emulator itself then needs a restart
 BLOCKED_WAIT = 180  # seconds the game stays closed after "Unable to attack Village!", at least...
 BLOCKED_WAIT_MAX = 300  # ...and at most (a different wait each time)
 
@@ -197,6 +204,14 @@ class Bot:
         # (the battle drops it); if no battle came, it's dropped next round.
         self._left_selected = False
         self._left_zoomed_in = False  # the same: the battle's view needs zooming out
+        # The home village as the game centres it when it loads (zoomed out):
+        # a view moved off it since (the game pans to a Hero Journey challenge
+        # after a battle, or an emulator's pinch slid it) is dragged back.
+        self._home_view = None
+        self._home_fresh = False  # the game just loaded: the next zoomed-out village is the centred one
+        self._centre_due = False  # this round's village not looked at yet (looked at once, by the first job needing it)
+        self._zoom_due = False  # back from a battle the village isn't zoomed out: done by the first job needing it
+        self._centred_in_a_row = 0  # rounds the village came back centred by itself (RECENTRE_RETIRE: no more looks)
         self._warned_minimums: dict[str, int] = {}  # loot minimums no base meets, once logged
         self._break_due: int | None = None  # attacks between breaks, picked at random
         # The human-like habits that span rounds (farmbot/human.py):
@@ -446,6 +461,7 @@ class Bot:
                 self.game.wait(1)  # a look takes ~0.3 s: the village is seen soon after it shows
             else:
                 log.info("Game loaded: %s", screen.value)
+                self._home_view, self._home_fresh = None, True
                 return
             log.info("The game closed while loading; starting it again")
 
@@ -557,6 +573,91 @@ class Bot:
         self._closed_for = None
         self._fresh_at = self.game.clock()  # rested
 
+    def _mend_pinch(self) -> None:
+        """A zoom-out moved the map over instead of zooming (the emulator's
+        pinch stopped getting through: LDPlayer's two-finger touch, which
+        its ctrl+scroll zoom uses too). Reopening the game brings it back."""
+        if not self.game.pinch_pans:
+            return
+        self.game.pinch_pans = False
+        if self._refocus_mends_pinch():
+            return
+        now = self.game.clock()
+        recent = [t for t in getattr(self, "_pinch_reopens", []) if now - t < PINCH_REOPEN_WINDOW]
+        if len(recent) >= PINCH_REOPENS:
+            log.warning("Zooming out still moves the view after reopening the game %d times: restart the emulator "
+                        "to bring its two-finger touch back (the view is dragged back after each zoom-out meanwhile)",
+                        len(recent))
+            self._pinch_reopens = recent
+            return
+        self._pinch_reopens = recent + [now]
+        log.warning("Zooming out stopped working (the view moved instead): reopening the game")
+        self.status("Reopening the game (zooming out stopped working)")
+        self.game.device.stop_app(self.config.device.package)
+        self.game.wait(3)
+        self.ensure_game_running()
+        self._left_selected = self._left_zoomed_in = False  # (the game opens afresh)
+        screens.settle(self.game)
+
+    def _refocus_mends_pinch(self) -> bool:
+        """The quick mend first: the game sent to the background and brought
+        back (it forgets the touch it thought was held), then one zoom-out to
+        see that it zooms again. False if the device can't, or the pinch still
+        only drags the map (the game is reopened then)."""
+        refocus = getattr(self.game.device, "refocus_app", None)
+        if refocus is None:
+            return False
+        log.info("Zooming out moved the view instead: putting the game in the background and back")
+        self.status("Bringing the game back (zooming out stopped working)")
+        try:
+            refocus(self.config.device.package)
+        except Exception as exc:  # noqa: BLE001 (the reopen below is the way out)
+            log.info("Couldn't put the game in the background and back (%s)", exc)
+            return False
+        self.game.wait(REFOCUS_SETTLE)
+        if screens.settle(self.game) is not screens.Screen.HOME:
+            return False
+        self.game.zoom_out(force=True)
+        if self.game.pinch_pans:
+            self.game.pinch_pans = False
+            log.info("Zooming out still moves the view: reopening the game")
+            return False
+        log.info("Zooming out works again")
+        return True
+
+    def _centred(self, zoom: bool = False) -> None:
+        """TEMPORARY (the game's November 2026 update): back from a battle,
+        the village no longer comes back centred. Before a job that taps
+        the map (collecting, the loot cart, the treasury, gravestones, the
+        boat), put the zoomed-out village back where the game showed it
+        when it loaded: once a round, and only in a round that has such a
+        job. The first zoomed-out village after a load is kept as the
+        centred one (with the game already open when the bot started, the
+        first one seen is all there is). Once the game has come back
+        centred RECENTRE_RETIRE rounds in a row (fixed in an update), it
+        isn't looked at again; RECENTRE off: never. The village is zoomed
+        out first, once a round (back from a battle it's zoomed in a
+        little); ``zoom``: zoomed out again (the boat: the view may be as
+        the last job left it)."""
+        if zoom or self._zoom_due:
+            self._zoom_due = False
+            self.game.zoom_out()
+            self._left_zoomed_in = False
+            self._mend_pinch()  # (the pinch only dragged the map: mended before the job taps it)
+        if not (RECENTRE and self._centre_due) or self._centred_in_a_row >= RECENTRE_RETIRE:
+            return
+        self._centre_due = False
+        screen = self.game.refresh()
+        if self._home_view is None or self._home_fresh:
+            self._home_view, self._home_fresh = screen.copy(), False
+            return
+        if self.game.recentre(self._home_view) is not None:
+            self._centred_in_a_row = 0
+            return
+        self._centred_in_a_row += 1
+        if self._centred_in_a_row >= RECENTRE_RETIRE:
+            log.info("The village has come back centred %d rounds in a row: no longer checked", RECENTRE_RETIRE)
+
     def restart_game(self) -> None:
         log.warning("Restarting the game after a failed round")
         self.game.device.stop_app(self.config.device.package)
@@ -655,6 +756,22 @@ class Bot:
             if self._on_resources:
                 self._on_resources(loot)
         return loot
+
+    def _settled_resources(self) -> Loot | None:
+        """The resources once the Star Bonus claimed has flown into the
+        storages: claiming it slides the Treasury's own bars over the
+        resource bars for a few seconds (read then, a battle "gained"
+        millions less than nothing). Read until two readings agree."""
+        last = None
+        deadline = self.game.clock() + SETTLED_READ_WAIT
+        while True:
+            self.game.wait(SETTLED_READ_GAP, exact=True)
+            loot = self.read_resources()
+            if loot is not None and loot == last:
+                return loot
+            if self.game.clock() >= deadline:
+                return None  # (the next round's reading settles the attack)
+            last = loot
 
     def read_storage_max(self, village: str = "home", again: bool = False) -> None:
         """What the ``village``'s storages hold, if not read yet today or one
@@ -790,10 +907,13 @@ class Bot:
         else:
             self.game.deselect()
         self._left_selected = False
-        # The village comes back from battles zoomed in a little, and the
-        # next battle's view starts from the village's zoom.
-        self.game.zoom_out()
-        self._left_zoomed_in = False
+        # The village comes back from battles zoomed in a little: zoomed out
+        # (and centred) only before a job that taps the map (see _centred).
+        # A round without one leaves it be: the battle zooms out by itself.
+        self._zoom_due = True
+        self._centre_due = True  # (looked at by the first job that taps the map: see _centred)
+        if self._home_fresh:
+            self._centred()  # the village as the game just loaded it: kept as the centred one
         if self._pending:
             # Before collecting or training, which would blur the gain.
             self._settle_attack(self.read_resources())
@@ -973,6 +1093,7 @@ class Bot:
                     log.info("Collectors: leaving the %s ones (storage full)", " and ".join(sorted(full & set(kinds))))
                     kinds = tuple(k for k in kinds if k not in full)
                 if kinds:
+                    self._centred()
                     village.collect_resources(self.game, kinds)
                 self._since_home_collect = 0
                 # ("Village jobs in a new order": not every N rounds on the dot.)
@@ -1019,7 +1140,9 @@ class Bot:
                 # It keeps what's in it until it's collected.
                 log.info("Loot cart: left for later (the storages are full)")
                 return
-            village.collect_loot_cart(self.game)
+            if self._shows(T.LOOT_CART):
+                self._centred()
+                village.collect_loot_cart(self.game)
 
     def _treasury(self) -> None:
         if not self.config.bot.collect_treasury:
@@ -1038,12 +1161,25 @@ class Bot:
             log.info("Treasury: left for later (the storages are full)")
             self._treasury_after = now + TREASURY_FULL_RETRY
             return
+        self._centred()
         done = village.collect_treasury(self.game)
         self._treasury_after = now + (TREASURY_EVERY if done else TREASURY_FULL_RETRY)
 
     def _gravestones(self) -> None:
-        if self.config.bot.clear_gravestones:
+        if self.config.bot.clear_gravestones and self._shows(T.GRAVESTONE):
+            self._centred()
             village.clear_gravestones(self.game)
+
+    def _shows(self, name: str) -> bool:
+        """``name`` (the loot cart's label, a gravestone) shows in the
+        village as it is: looked for before zooming out and centring it
+        for the job, so a round with nothing there leaves the view be.
+        Already zoomed out this round (collecting did), or no picture to
+        look for: the job looks for itself."""
+        if not self._zoom_due or not self.game.has(name):
+            return True
+        self.game.refresh()
+        return self.game.find(name, threshold=village.COLLECTOR_THRESHOLD) is not None
 
     def _clan_visit(self) -> None:
         cfg = self.config
@@ -1509,6 +1645,7 @@ class Bot:
         if not capital.raid_weekend(now) or (self._capital_after and now < self._capital_after):
             return
         self.checkpoint()
+        self._centred()
         self.status("Raiding the Clan Capital")
         self._capital_after = now + timedelta(hours=1)
         try:
@@ -1629,7 +1766,8 @@ class Bot:
 
     def builder_cycle(self) -> bool:
         """One builder base battle (sailing over first if needed)."""
-        if screens.settle(self.game) is not screens.Screen.BUILDER:
+        where = screens.settle(self.game)
+        if where is not screens.Screen.BUILDER:
             if self.village is None and self.config.bot.read_village:
                 # Not known yet whether this account has the builder base (it opens at Town Hall 6):
                 # the village data says, before looking for a boat that may not be repaired yet.
@@ -1637,6 +1775,9 @@ class Bot:
                 if self.playing() != "builder":
                     return self.cycle()
             self.status("Sailing to the builder base")
+            if where is screens.Screen.HOME:
+                self._centre_due = True  # (the boat: wherever the village was left)
+                self._centred(zoom=True)
             try:
                 builder.go_to_builder_base(self.game)
             except builder.BuilderError as exc:
@@ -1811,6 +1952,7 @@ class Bot:
         self._closed_for = None  # playing: whatever it was closed for is over
         self._tire()
         self.ensure_game_running()
+        self._mend_pinch()
         if self._check_account_first():
             return self.cycle()  # with that account's settings
         if self.playing() == "builder":
@@ -1825,6 +1967,7 @@ class Bot:
                 raise builder.BuilderError("couldn't sail back to the home village")
         self._upgrade_idle, self._round_walls = False, 0
         self.maintain_village()
+        self._mend_pinch()  # (the village's zoom-out after the last battle is where it shows)
         if self._leave_for_upgrades():
             return False
         self._extra(self.war_attacks)  # before farming: the clan's war comes first
@@ -1878,6 +2021,9 @@ class Bot:
         wants = cfg.search
         if wants.min_dark and self._not_yet("dark", "the dark elixir minimum (no base offers any yet)"):
             wants = replace(wants, min_dark=0)
+        if cfg.attack.league_bonus and bonus is None:
+            # League bonus farming: the bonus is the loot, whatever the base holds; every base is attacked.
+            wants = replace(wants, min_gold=0, min_elixir=0, min_dark=0)
         target = search.search(self.game, wants, cfg.regions, self._base_seen, zoom_out=self._left_zoomed_in,
                                look=self.game.uses("look_at_bases"), near=self.game.uses("near_misses"))
         self._left_zoomed_in = False
@@ -1901,8 +2047,9 @@ class Bot:
             while closes and not any(self.game.find(name) for name in closes) and self.game.clock() < deadline:
                 self.game.wait(1, exact=True)
                 self.game.refresh()
+            claimed = bool(closes) and any(self.game.find(name) for name in closes)
             village.clear_popups(self.game)
-            after = self.read_resources()
+            after = self._settled_resources() if claimed else self.read_resources()
             if after is not None:  # otherwise the next round's reading settles it
                 self._settle_attack(after)
         self.status(f"Attack {self.attacks} done")

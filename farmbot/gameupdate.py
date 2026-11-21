@@ -134,7 +134,7 @@ def update(game, button: Rect, package: str | None = None) -> bool:
         return False
     finally:
         # Closed first, then started: started straight from the store after an
-        # install, it stayed on a black screen (BOB's, 16 Nov 2026).
+        # install, it stayed on a black screen (an account's, 16 Nov 2026).
         try:
             device.stop_app(package)
         except Exception:
@@ -148,7 +148,7 @@ def update(game, button: Rect, package: str | None = None) -> bool:
 
 def _wait_loaded(game) -> None:
     """The first start after an update unpacks the new content: its loading
-    screen can take minutes (BOB's: over 3), and a restart in the middle
+    screen can take minutes (an account's: over 3), and a restart in the middle
     starts it again. Waited out until anything known shows."""
     from farmbot import screens
 

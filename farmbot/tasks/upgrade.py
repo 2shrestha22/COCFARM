@@ -167,8 +167,10 @@ def upgrade(game: Game, cfg: Config, read_resources: Reader, full: set[str], las
         return 0
     if not full:
         kinds = ["equipment"]
-    game.zoom_out()
     loot = read_resources()
+    if not loot:  # (zoomed in on a building, the numbers can sit over busy art)
+        game.zoom_out()
+        loot = read_resources()
     if loot is None:
         return 0
     # No dark elixir before Town Hall 7: nothing is looked for in it (the research filter's dark button).
@@ -350,8 +352,10 @@ def _in_order(game: Game, kinds: list[str], spend: dict[str, tuple[str, ...]], f
 
 def _open(game: Game, read_resources: Reader, full: set[str]) -> dict[str, int] | None:
     """The budget: what's in the full storages."""
-    game.zoom_out()
     loot = read_resources()
+    if not loot:  # (zoomed in on a building, the numbers can sit over busy art)
+        game.zoom_out()
+        loot = read_resources()
     return None if loot is None else {k: getattr(loot, k) for k in full}
 
 

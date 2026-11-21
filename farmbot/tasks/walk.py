@@ -32,63 +32,63 @@ NAMES = {"queen": "Archer Queen", "champion": "Royal Champion"}
 
 FRAME_WIDTH = 1177  # px wide the sizes below are for (the bot's frames on MuMu)
 FIELD_BOTTOM = 0.8  # share of the screen's height above the troop bar
-FIELD_SAT, FIELD_VALUE = 110, 120  # her bar's colour this strong and bright at least (BOB, 18 Nov: a dim,
+FIELD_SAT, FIELD_VALUE = 110, 120  # her bar's colour this strong and bright at least (18 Nov: a dim,
 # teal-tinted base, her bar at saturation 120-160, brightness 130-190, went unseen)
 FIELD_SAT_STRONG = 200  # ...and its strongest colour (her bar's fill is ~245)
 FIELD_SAT_PALE, BADGE_SAT_PALE = 55, 20  # her bar and badge while she's invisible (paler), looked for...
 PALE_CONFIRM, PALE_SAME = 1.2, 15  # s and px within which a next look confirms a pale sighting off from her
-PALE_MOST = 90  # ...and never further (BOB, 18 Nov: unseen 5.5 s, a pale bar 220 px off was taken for her; she
+PALE_MOST = 90  # ...and never further (18 Nov: unseen 5.5 s, a pale bar 220 px off was taken for her; she
 # walks 15-20 px a second)
-PALE_REACH = 30  # ...this many px from where she was at most, and FIELD_WALK more a second since (BOB,
+PALE_REACH = 30  # ...this many px from where she was at most, and FIELD_WALK more a second since (
 # 18 Nov: 57 px off in 0.4 s, another bar)
 PALE_HUE = 7  # OpenCV hue her bar's fill is off her card's bar's (towards the ground's) at least, seen pale...
 PALE_HUE_HEALTH = 0.62  # (her health this much at least: lower, her card's bar turns yellow first)
 PALE_SHARE = 0.68  # ...or its saturation this share of the strongest she's shown, at most
 FIELD_GREEN_FROM, GREEN_TILL = 45, 0.4  # her bar's green from this hue; it can be green down to this health
-FIELD_GREEN = 66  # OpenCV hue: a hero's bar is greener than this; BOB's glowing scenery is ~77
+FIELD_GREEN = 66  # OpenCV hue: a hero's bar is greener than this; an account's glowing scenery is ~77
 BAR_TO_HERO = (20, 25)  # px from the left end of the bar over her head to her
-BADGE_HUE = (125, 165)  # her bar has her level on a purple badge just left of it (BOB, 18 Nov:
+BADGE_HUE = (125, 165)  # her bar has her level on a purple badge just left of it (18 Nov:
 BADGE_SHARE = 0.2  # ...grass flecks of the bar's green were taken for it); this share of the patch purple...
-BADGE_SAT = 45  # ...this strong at least (BOB, 18 Nov: on a dim teal base, 40-120)
+BADGE_SAT = 45  # ...this strong at least (18 Nov: on a dim teal base, 40-120)
 FIELD_BAR = 26  # px her bar over her head is when full; the coloured part is her health's share of it
 BAR_SLACK = 0.3  # ...and this share longer at most...
-BAR_SHORT = 0.35  # ...this share of it at least (a spell's sparkle can hide much of it: BOB, 18 Nov, 8 px at 72%)
-HUE_SLACK = 7  # OpenCV hue her field bar is off her card's bar at most (lights by her bar: hue 15-25, BOB)
-CARD_HUE_SLACK = 12  # ...from her card's bar, yellow to red (BOB, 18 Nov: 31 over her head by 19 on her card at 53%)
+BAR_SHORT = 0.35  # ...this share of it at least (a spell's sparkle can hide much of it: 18 Nov, 8 px at 72%)
+HUE_SLACK = 7  # OpenCV hue her field bar is off her card's bar at most (lights by her bar: hue 15-25, seen)
+CARD_HUE_SLACK = 12  # ...from her card's bar, yellow to red (18 Nov: 31 over her head by 19 on her card at 53%)
 STRIP_EDGE, STRIP_CLEAR = 3, 0.2  # rows just over her bar (and from the 2nd under it) with this share of its colour at most...
 STRIP_FULL, STRIP_ROWS = 0.75, (2, 4)  # ...and this many rows of it this full (the zoom varies by base;
-# a dark speck of her over it leaves a row 84% full: BOB, 18 Nov)
+# a dark speck of her over it leaves a row 84% full: 18 Nov)
 STRIP_SAT = 0.7  # its colour is this share of its middle's saturation at least (lime grass of its hue
-# just over and under it is paler: BOB, 18 Nov, S 100-130 by her bar's 190-245)
+# just over and under it is paler: 18 Nov, S 100-130 by her bar's 190-245)
 FIELD_REACH = 450  # px she's looked for from where she was last seen (or went down) at most...
 FIELD_STEP = 80  # ...just after (a look is under a second apart)...
 FIELD_WALK = 40  # px a second the reach from where she was last seen grows while she isn't seen
 INVISIBLE_FOR = 4.0  # s an Invisibility Spell hides her: the next one goes as it wears off
 MISS_AFTER = 2.4  # s a spell takes to hold her, and the shots already at her to land: her health then is what it holds...
-# (BOB, 18 Nov: at 1.5 s, before it landed, 91% -> 72% as it did said "missed"; it held her at 64-72% after)
+# (18 Nov: at 1.5 s, before it landed, 91% -> 72% as it did said "missed"; it held her at 64-72% after)
 COVER_FROM = 1.0  # s after a spell goes that it may hide her (it lands in 1.8 s or so)
 MISS_DROP = 0.1  # ...and dropping by this much from it says it missed her: another one at once
-# (BOB, 18 Nov: 36% -> 9% "hidden"; but measured from the cast, the hit before it held looked like a miss)
+# (18 Nov: 36% -> 9% "hidden"; but measured from the cast, the hit before it held looked like a miss)
 WALK_ABILITY_HEALTH = 0.5  # no Invisibility left: her ability (heal, shield) at this health, not lost with her
-ABILITY_LEAD = 1.0  # s before her last Invisibility wears off that it goes (BOB, 18 Nov: she fell as it did)
+ABILITY_LEAD = 1.0  # s before her last Invisibility wears off that it goes (18 Nov: she fell as it did)
 WALK_LAST_STAND = 0.25  # ...and at this health whatever's left: an Invisibility Spell may have missed her
 FOX_COOLDOWN = 6.0  # s the Spirit Fox waits between its turns hiding her (the wiki; 5 before March 2024)
 SPELL_WORTH = 1.0  # s of her showing a spell must hide, at least, before the fox's next turn
 SPELL_LAND = 1.8  # s from the look that sends a spell till it holds her (it falls first; shots already on their
-# way still land: BOB, 18 Nov, the circle showed 1.7 s on and she was hit a second more)
+# way still land: 18 Nov, the circle showed 1.7 s on and she was hit a second more)
 STILL = 15  # ...so with her standing (fighting: two sightings this many px apart at most), it goes that
 # early, before the fox lets her go, on where she stands (seen this many s before its turn, at most)
 STILL_SEEN = 1.5
 STILL_SPAN = 0.7  # s apart at least, the two sightings that say she's standing
-SPELL_RADIUS = (60, 45)  # px across and up an Invisibility Spell's circle reaches (BOB, 18 Nov); she's
-# hidden only inside it (BOB, 18 Nov: walked 50 px on from a spell's spot, hit before the next was due)
+SPELL_RADIUS = (60, 45)  # px across and up an Invisibility Spell's circle reaches (18 Nov); she's
+# hidden only inside it (18 Nov: walked 50 px on from a spell's spot, hit before the next was due)
 LEAD_SHARE = 0.5  # share of where she'd walk to by the time a spell lands that it goes ahead of her
 # (she often stops at the next building: the whole way overshoots)
 HIT_FLIGHT = 0.6  # s shots fired before the fox's turn keep landing in it
 HIT_SPAN, HIT_DROP = 1.2, 0.04  # her health down this much within this many s: she's being hit
 FRESH = 0.8  # s since she was seen that a spell goes on that sighting; older...
-SIGHT_WAIT = 0.6  # ...it waits this long at most to see her again (BOB, 18 Nov: spells landed where she'd been)...
-SIGHT_LOW = 0.4  # ...but not at all once she's this low (BOB, 18 Nov: at 26% she fell while it waited)
+SIGHT_WAIT = 0.6  # ...it waits this long at most to see her again (18 Nov: spells landed where she'd been)...
+SIGHT_LOW = 0.4  # ...but not at all once she's this low (18 Nov: at 26% she fell while it waited)
 HEALERS_UNREAD = 5  # Healers to send when the card's count isn't read
 FOX_LOOKS = 1.5  # s of looks the fox's clock is set by
 FOX_SLACK = 0.8  # s into its turn (or gap) and before its end, at least, that a look against its clock sets it
@@ -97,7 +97,7 @@ SPEAR_LOOKS = 4.0  # s after she goes in that her equipment's looked for over he
 SPEAR_HURT = 1.0  # her health at most for her ability, the Rocket Spear on her: at once, at the edge, far from
 # the defences (it throws at them from further than they reach her; the user, 19 Nov: use it early, then a spell
 # once she's first hurt, then spells cycled with the fox's turns)
-LOOK_EVERY = 0.1  # s between looks at her health (a screenshot is most of a look: BOB, 18 Nov, looks
+LOOK_EVERY = 0.1  # s between looks at her health (a screenshot is most of a look: 18 Nov, looks
 # 0.8-2 s apart sent spells 2-3 s after she'd been hit)
 
 
@@ -186,10 +186,10 @@ def _bars(screen: np.ndarray, health: float, sats: tuple[int, ...] = ()) -> list
     green = (hue >= FIELD_GREEN_FROM) & (hue <= FIELD_GREEN)  # (the scenery's glow is a bluer green)
     warm = (hue <= armybar.BAR_HUE_WARM) | (hue >= 180 - armybar.BAR_HUE_RED)  # yellow, orange, red
     colour = green if health > 0.6 else warm if health < 0.4 else green | warm
-    # (Low, the bar's short: BOB, 18 Nov, 6 px at 31%, wiped out by a 7 px opening and an 8 px least.)
+    # (Low, the bar's short: 18 Nov, 6 px at 31%, wiped out by a 7 px opening and an 8 px least.)
     shortest = min(8.0, max(5.0, 0.6 * FIELD_BAR * health))
     found: list[tuple[int, int, int]] = []
-    # (Also of the strongest colour only: BOB, 18 Nov, lime grass of her bar's hue just over it, less
+    # (Also of the strongest colour only: 18 Nov, lime grass of her bar's hue just over it, less
     # strong, ran into it, and the two made one blotch too tall for a bar.)
     for sat in sats or (FIELD_SAT, FIELD_SAT_STRONG):
         bright = (hsv[..., 1] > sat) & (hsv[..., 2] > FIELD_VALUE)
@@ -214,7 +214,7 @@ def sight(screen: np.ndarray | None, before: np.ndarray | None, near: Point, hea
           reach: float = FIELD_REACH, hue: int | None = None, since: float = 0.5) -> Sighting | None:
     """Where she is on the field, her bar as ``find`` has it, or else, close
     to where she was, pale (she's invisible: the Spirit Fox's turn or a
-    spell; BOB, 18 Nov, saturation 75-95 by 170-245 seen). Only near her: a
+    spell; 18 Nov, saturation 75-95 by 170-245 seen). Only near her: a
     pale bar is too like grass (``since`` s since she was seen there). With
     its fill's colour, to tell (``hidden``)."""
     spot = find(screen, before, near, health, reach, hue)
@@ -227,7 +227,7 @@ def sight(screen: np.ndarray | None, before: np.ndarray | None, near: Point, hea
         bars = [(x, y, w) for x, y, w in _bars(screen, health, (FIELD_SAT_PALE,))
                 if _badge(hsv, x, y, scale, BADGE_SAT_PALE)
                 and _like_hers(hsv, x, y, w, health, hue, scale, FIELD_SAT_PALE)]
-        # (Of its own paleness: BOB, 18 Nov, under a spell on grass, her bar unseen 9 s, spells where she'd been.)
+        # (Of its own paleness: 18 Nov, under a spell on grass, her bar unseen 9 s, spells where she'd been.)
         spots = [(round(x + BAR_TO_HERO[0] * scale), round(y + BAR_TO_HERO[1] * scale)) for x, y, _ in bars]
         spots = [p for p in spots if math.dist(p, near) <= min(reach, PALE_REACH + FIELD_WALK * since, PALE_MOST) * scale]
         if not spots:
@@ -244,14 +244,14 @@ def sight(screen: np.ndarray | None, before: np.ndarray | None, near: Point, hea
 def hidden(seen: Sighting, health: float, card_hue: int | None, strongest: float | None) -> bool:
     """Whether a sighting is of her invisible: her bar pale, by its fill
     against her card's bar (always solid) and the strongest she's shown this
-    walk. (BOB, 18 Nov, no spells: on a teal base, under the Spirit Fox, hue
+    walk. (18 Nov, no spells: on a teal base, under the Spirit Fox, hue
     64-66 by her card's 50, saturation 130-166 by 185-237 seen; on lime grass,
     the hue kept, saturation 75-95 by 170-245.)"""
     if seen.pale:
         return True
     if seen.hue < 0:
         return False
-    # (Lower, from green to yellow, the bar over her head turns later than her card's: BOB, 18 Nov,
+    # (Lower, from green to yellow, the bar over her head turns later than her card's: 18 Nov,
     # hue 61 over her head by 45 on her card at 56%.)
     green = card_hue is not None and FIELD_GREEN_FROM <= card_hue <= FIELD_GREEN and health >= PALE_HUE_HEALTH
     if green and FIELD_GREEN_FROM <= seen.hue <= FIELD_GREEN + 14 and seen.hue - card_hue >= PALE_HUE:
@@ -269,13 +269,13 @@ def find(screen: np.ndarray | None, before: np.ndarray | None, near: Point, heal
     once she's hurt, and not while she's invisible): a bar that wasn't there
     before she went in, with her level badge, as long as her health says and
     (``hue``) the colour of her card's bar; the nearest to where she was last
-    seen. (BOB, 18 Nov: orange lights by purple roofs were taken for her.)"""
+    seen. (18 Nov: orange lights by purple roofs were taken for her.)"""
     if screen is None:
         return None
     scale = screen.shape[1] / FRAME_WIDTH
     hsv = cv2.cvtColor(screen, cv2.COLOR_BGR2HSV)
     there = _there(before, health) if before is not None and before.shape == screen.shape else []
-    # (Not what was there before she went in, of its colour: BOB, 18 Nov, her green bar over an
+    # (Not what was there before she went in, of its colour: 18 Nov, her green bar over an
     # orange building's lights was left out.)
     new = [(x, y, w) for x, y, w in _bars(screen, health)
            if not any(abs(x - a) <= 4 * scale and abs(y - b) <= 4 * scale and _near_hue(_fill(hsv, x, y, w, scale), f)
@@ -291,7 +291,7 @@ _THERE: dict = {}
 
 def _there(before: np.ndarray, health: float) -> list[tuple[int, int, int]]:
     """The bars on ``before`` (x, y, fill hue) a hero at ``health`` would
-    match, worked out once a walk (a look is a screenshot and this, BOB)."""
+    match, worked out once a walk (a look is a screenshot and this, seen)."""
     key = (id(before), int(before[::97, ::89].sum()), round(health, 2))  # (an id can be had again)
     if key not in _THERE:
         if len(_THERE) > 64 or any(k[0] != key[0] for k in _THERE):
@@ -313,7 +313,7 @@ def _like_hers(hsv: np.ndarray, x: int, y: int, w: int, health: float, hue: int 
     if not _strip(hsv, x, y, w, fill, scale, floor):
         return False
     if hue is None or hue < 0 or (FIELD_GREEN_FROM <= fill <= FIELD_GREEN and health >= GREEN_TILL):
-        return True  # (from green to yellow, the bar over her head turns later than her card's: BOB,
+        return True  # (from green to yellow, the bar over her head turns later than her card's:
         # 18 Nov, hue 61 over her head and 45 on her card at 56%; the lamps it's against are orange)
     return _near_hue(fill, hue, CARD_HUE_SLACK)
 
@@ -331,7 +331,7 @@ def _near_hue(a: int, b: int, slack: int = HUE_SLACK) -> bool:
 
 def _strip(hsv: np.ndarray, x: int, y: int, w: int, fill: int, scale: float, floor: int = FIELD_SAT) -> bool:
     """Her bar is a thin strip of its colour with none of it just above or
-    below (a lamp or a lit roof edge is a blotch: BOB, 18 Nov)."""
+    below (a lamp or a lit roof edge is a blotch: 18 Nov)."""
     hue = hsv[..., 0].astype(int)
     rows = slice(max(y - round(7 * scale), 0), y + round(9 * scale))  # (its top row can be just over y)
     cols = slice(x + 1, x + max(2, w - 1))
@@ -344,7 +344,7 @@ def _strip(hsv: np.ndarray, x: int, y: int, w: int, fill: int, scale: float, flo
     full = np.flatnonzero(share >= STRIP_FULL)
     if full.size < STRIP_ROWS[0] * scale or full.size > STRIP_ROWS[1] * scale or full[-1] - full[0] >= full.size:
         return False  # (solid rows, one block of them)
-    # (It ends sharply, past a soft row at either end: a red flier's edge thins out over rows; BOB,
+    # (It ends sharply, past a soft row at either end: a red flier's edge thins out over rows;
     # 18 Nov, her bar's soft top row was 67% of its colour.)
     over, under = full[0] - 1, full[-1] + 2
     return bool(share[max(over - edge, 0):over].max(initial=0) <= STRIP_CLEAR
@@ -394,7 +394,7 @@ def walk(game: Game, cfg: Config, singles: list[Card], troops: list[Card], spell
     if not went:
         log.warning("%s walk: she wasn't placed; the army goes in as usual", name)
         return None
-    # Her Spirit Fox's turns count from the tap that put her down (BOB, 18 Nov: counted from before
+    # Her Spirit Fox's turns count from the tap that put her down (18 Nov: counted from before
     # placing, 3 s early, a spell went into the fox's own turn and was lost; from after its checks, late).
     done = Walk(hero, side, start, tapped.get(id(hero), game.clock()), before=before, seen=start)
     log.info("%s walk: she goes in at %s on the %s side; the army follows once she falls (%.0f s at most)",
@@ -444,7 +444,7 @@ def _ahead(done: Walk, now: float, screen) -> Point:
 
 def _down(screen, hero: Card, cfg: Config, fired: bool = False) -> bool:
     """Her card has greyed out: she's down. Once her ability's gone, it's
-    grey with her health bar still on it (BOB, 18 Nov: grey at 100%, green,
+    grey with her health bar still on it (18 Nov: grey at 100%, green,
     she walked on; the walk took her for fallen and the army went in): then
     only with the bar gone."""
     if screen is None or not armybar.is_spent(screen, hero, cfg.bar):
@@ -463,7 +463,7 @@ def fox_gap(fox: float, since: float) -> tuple[bool, float]:
 def _spell_time(fox: float, since: float, done: Walk, now: float | None = None) -> bool:
     """A spell now is worth it, as far as her Spirit Fox goes: she's
     showing (the fox between turns), long enough yet. The first goes as
-    the gap opens (BOB, 18 Nov: waiting a second into it, defences took
+    the gap opens (18 Nov: waiting a second into it, defences took
     her the moment the fox let go), the next as that one wears off; or
     early, to land as the fox lets her go: where she was just seen (pale,
     the fox on her), or where she stood as it took her."""
@@ -474,7 +474,7 @@ def _spell_time(fox: float, since: float, done: Walk, now: float | None = None) 
         phase = since % (fox + FOX_COOLDOWN)
         if fox - phase > SPELL_LAND or not done.found:
             return False
-        # (On where she stood as the fox took her: BOB, 18 Nov, a sighting 9 s old, from before a
+        # (On where she stood as the fox took her: 18 Nov, a sighting 9 s old, from before a
         # spell, sent one where she no longer was.)
         fresh = now is not None and now - done.seen_at <= FRESH
         return fresh or (done.still and since - (done.seen_at - done.fox_at) <= phase + STILL_SEEN)
@@ -484,7 +484,7 @@ def _spell_time(fox: float, since: float, done: Walk, now: float | None = None) 
 def _fox_seen(done: Walk, fox: float, now: float, hid: bool, covered: bool, name: str) -> None:
     """Sets the Spirit Fox's clock by what's seen of her: hidden twice
     running with no spell on her, its turn has begun; seen twice running
-    in what the clock has for its turn, that's over. (BOB, 18 Nov, no
+    in what the clock has for its turn, that's over. (18 Nov, no
     spells: its turns 0-4.4, 10.2-14.6, 20.3-24.9 s from the tap.)"""
     done.looks = [(t, h) for t, h in done.looks if now - t <= FOX_LOOKS] + [(now, hid)]
     if not fox or done.fox_down or covered or len(done.looks) < 2 or done.looks[-2][1] != hid:
@@ -506,7 +506,7 @@ def _fox_seen(done: Walk, fox: float, now: float, hid: bool, covered: bool, name
 
 def _confirmed(done: Walk, sighting: Sighting | None, now: float, scale: float) -> Sighting | None:
     """A pale sighting away from where she was last seen, only once a next
-    look has it there too (BOB, 18 Nov: a wall's lit edge 76 px off, taken for
+    look has it there too (18 Nov: a wall's lit edge 76 px off, taken for
     her while she stood still: a spell went on it)."""
     if sighting is None or not sighting.pale or not done.found or math.dist(sighting.spot, done.seen) <= PALE_REACH * scale:
         done.maybe = None
@@ -525,9 +525,9 @@ def _covered(done: Walk, now: float) -> bool:
 
 def _pet(screen, done: Walk, name: str) -> None:
     """Watches her pet's picture on her card: greyed out, the Spirit Fox is down
-    (and its turns with it: BOB, 18 Nov, she went 70% -> 15% as it fell)."""
+    (and its turns with it: 18 Nov, she went 70% -> 15% as it fell)."""
     if screen is None or done.fox_down or not hasattr(done.hero, "left"):
-        return  # (her ability greys her card, not the fox's picture: BOB, 18 Nov, 0.56 on it till it fell)
+        return  # (her ability greys her card, not the fox's picture: 18 Nov, 0.56 on it till it fell)
     colour = armybar.pet_colour(screen, done.hero)
     if done.pet is None:
         done.pet = colour if colour >= PET_SEEN else None
@@ -576,13 +576,13 @@ def _watch(game: Game, cfg: Config, done: Walk, left: dict[int, int | None], nam
             game.tap(*done.hero.center)
             done.fired = True
         if health is None:
-            # No bar on her card that isn't grey: she's invisible (her card hides it meanwhile; BOB,
+            # No bar on her card that isn't grey: she's invisible (her card hides it meanwhile;
             # 18 Nov: the Spirit Fox). Nothing to do till she shows again: a spell then.
             pass
         else:
             seen = True
             # Unseen a while, she may be further off: the reach grows as she walks, from when she was
-            # last seen or else went down (BOB, 18 Nov: first hurt 270 px in, past a fixed reach, she
+            # last seen or else went down (18 Nov: first hurt 270 px in, past a fixed reach, she
             # was never found and every spell went on where she went down).
             since = now - (done.seen_at if done.found else done.began)
             reach = min(FIELD_REACH, FIELD_STEP + FIELD_WALK * max(0.0, since))
@@ -604,7 +604,7 @@ def _watch(game: Game, cfg: Config, done: Walk, left: dict[int, int | None], nam
                 done.shown = 0 if hid else done.shown + 1
             # A spell on her: from when it lands till it wears off.
             # A spell may be on her: from soon after any went till it wears off, whether or not another
-            # followed (BOB, 18 Nov: hidden by the last but one after a recast, the fox's clock was set by it).
+            # followed (18 Nov: hidden by the last but one after a recast, the fox's clock was set by it).
             covered = _covered(done, now)
             if spot is not None and sighting.hue >= 0 and now - done.began >= fox + FOX_SLACK:
                 # (Its first turn's from the tap, sure; her bar's first sightings, pale, are less so.)
@@ -621,7 +621,7 @@ def _watch(game: Game, cfg: Config, done: Walk, left: dict[int, int | None], nam
                   and done.shown >= 2 and now < hidden_until
                   and done.cast_on is not None and now - done.cast_at >= SPELL_LAND + LOOK_EVERY):
                 # Seen, not hidden, where the spell should hide her: it isn't (missed her, or wore off).
-                # Only a green bar's told apart, hidden or not: a red one's left to her health (BOB, 19 Nov:
+                # Only a green bar's told apart, hidden or not: a red one's left to her health (19 Nov:
                 # at 33-38% and holding, red sightings sent three spells back to back; she fell for want).
                 log.info("%s walk: seen though her Invisibility Spell should hide her: another", name)
                 hidden_until, done.cast_on, done.missed = now, None, True
@@ -632,15 +632,15 @@ def _watch(game: Game, cfg: Config, done: Walk, left: dict[int, int | None], nam
                          name, health * 100)
                 hidden_until, done.missed = now, True
             spell = next((c for c in done.invisibility if left[id(c)] is None or left[id(c)] > 0), None)
-            # Losing health, she's not hidden, whatever the fox's clock says (BOB, 18 Nov: hit from 92% to
+            # Losing health, she's not hidden, whatever the fox's clock says (18 Nov: hit from 92% to
             # 76% in what its clock had for its turn, the spell waited for it to end).
             healths = [(t, h) for t, h in healths if now - t <= HIT_SPAN] + [(now, health)]
             # In the fox's turn, shots already flying as it began still land: only a drop after counts
-            # (BOB, 18 Nov: 82% -> 76% as its turn began, a spell went into the turn).
+            # (18 Nov: 82% -> 76% as its turn began, a spell went into the turn).
             turn_from = now - (now - done.fox_at) % (fox + FOX_COOLDOWN) + HIT_FLIGHT if fox_turn else -1e9
             hit = max([h for t, h in healths if t >= turn_from] or [health]) - health >= HIT_DROP
             early = fox_turn  # (cast as the fox's turn ends, to land as it lets her go)
-            # (Not as the fox's next turn's about to hide her: it would land in it. BOB, 18 Nov, hit 0.2 s
+            # (Not as the fox's next turn's about to hide her: it would land in it. 18 Nov, hit 0.2 s
             # before its turn, a spell went into it.)
             hit = hit and not (fox and not fox_turn and fox_gap(fox, now - done.fox_at)[1] < SPELL_LAND)
             due = (spell is not None and now >= hidden_until
@@ -651,8 +651,8 @@ def _watch(game: Game, cfg: Config, done: Walk, left: dict[int, int | None], nam
                    and not (hid and not hit and not early and not covered))
             if due and not early and spot is None and done.found and now - done.seen_at > FRESH:
                 # Not seen of late: a look or two more for her; after a miss, till she's seen (the
-                # spot it went on was wrong). Low, at once (BOB, 18 Nov: at 26% she fell meanwhile).
-                # Nor as the fox's gap closes: by the next look it's too late for one (BOB, 18 Nov: at
+                # spot it went on was wrong). Low, at once (18 Nov: at 26% she fell meanwhile).
+                # Nor as the fox's gap closes: by the next look it's too late for one (18 Nov: at
                 # 51%, 1.2 s before the fox's turn, it waited and none went; she fell).
                 wanted = now if wanted is None else wanted
                 closing = fox and fox_gap(fox, now - done.fox_at)[1] < SPELL_WORTH + SIGHT_WAIT
@@ -683,7 +683,7 @@ def _watch(game: Game, cfg: Config, done: Walk, left: dict[int, int | None], nam
                 done.fired = True
             elif acfg.hero_abilities and not done.fired and health <= WALK_LAST_STAND:
                 # Nearly down though hidden (or a spell missed her): her ability, before it's lost
-                # with her. (BOB, 18 Nov: 59% -> cast -> 34% -> cast -> gone, ability unused.)
+                # with her. (18 Nov: 59% -> cast -> 34% -> cast -> gone, ability unused.)
                 log.info("%s walk: health %.0f%% even so: her ability", name, health * 100)
                 game.tap(*done.hero.center)
                 done.fired = True

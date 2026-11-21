@@ -58,6 +58,8 @@ FIELDS = [
     Field("attack.walk_fox", "text"),
     Field("attack.walk_spear_early", "bool"),
     Field("attack.speed_up", "bool"),
+    Field("attack.league_bonus", "bool"),
+    Field("attack.league_bonus_damage", "percent", 40, 100),
     Field("attack.star_bonus", "bool"),
     Field("attack.end_when_no_loot", "bool"),
     Field("attack.no_loot_seconds", "float", 3, 180),

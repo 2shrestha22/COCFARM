@@ -216,7 +216,7 @@ class AttackConfig:
     # her, and another each time one wears off. "off": no walk.
     hero_walk: str = "off"
     walk_time: float = 60.0
-    walk_invisibility_health: float = 0.95  # (BOB, 18 Nov: at 0.9, she lost half her health before the first took hold)
+    walk_invisibility_health: float = 0.95  # (18 Nov: at 0.9, she lost half her health before the first took hold)
     # The walker's Spirit Fox, by its level ("1-4", "5-9", "10"; "off": none):
     # it hides her 3, 3.5 or 4 s from when she goes down, then every 6 s
     # after; the spells fill those gaps, never its turns.
@@ -225,7 +225,14 @@ class AttackConfig:
     # goes in, far from the defences (it throws at them from further than they
     # reach her); off: it waits for her last stand.
     walk_spear_early: bool = True
-    speed_up: bool = True  # press the 1x button (last minute of a battle) so it plays at 4x
+    speed_up: bool = True  # press the 1x button (it shows from the start of a battle) so it plays at 4x
+    # League bonus farming: every base is attacked (no search minimums), the
+    # whole army goes down at once round the base (heroes' abilities at
+    # once, Earthquakes anywhere), and the battle is left as soon as the
+    # Overall Damage reaches league_bonus_damage: the league's loot bonus is
+    # paid in full from there, so the rest of the battle isn't worth waiting for.
+    league_bonus: bool = False
+    league_bonus_damage: float = 0.7
     # Earn the day's Star Bonus: while the strip above Battle still has stars to
     # light, home battles are fought for stars (never left early over loot; see
     # star_focus), then farming goes on as usual once all five are earned.

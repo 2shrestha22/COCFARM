@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Iterator
 
+import cv2
 import numpy as np
 
 from farmbot import armybar, buildings, deployzone, human, lootspots, plan, redline as rl, result, text
@@ -82,6 +83,11 @@ def deploy_edges(game: Game, cfg: Config, war_map: bool = False) -> tuple[dict[s
             found[s] = [p for p in pts if p[1] < floor]
             if not found[s]:
                 found[s], sources[s] = lines[s], "fixed line"
+    w, h = screen.shape[1], screen.shape[0]
+    for s, pts in found.items():
+        # The speed button and the Overall Damage on the right: a troop tap there toggles 4x.
+        kept = [p for p in pts if not in_corner(p, w, h)]
+        found[s] = kept or pts
     log.info("Deploy points: %s", ", ".join(f"{s} {len(found[s])} ({sources[s]})" for s in sides))
     game.deploy_origins = dict(sources)
     game.deploy_outline = outline
@@ -89,6 +95,13 @@ def deploy_edges(game: Game, cfg: Config, war_map: bool = False) -> tuple[dict[s
 
 
 BUTTON_ROW_MARGIN = 12  # px kept clear above the battle buttons
+RIGHT_CORNER = (0.88, 0.56, 0.86)  # the speed button and the Overall Damage: x from, y from, y to (screen shares)
+
+
+def in_corner(point: Point, width: int, height: int) -> bool:
+    """``point`` is on the speed button or the Overall Damage, right of the map."""
+    x0, y0, y1 = RIGHT_CORNER
+    return point[0] >= x0 * width and y0 * height <= point[1] <= y1 * height
 
 
 def _rhythm(cfg: Config) -> bool:
@@ -126,6 +139,69 @@ def _burst(game: Game, cfg: Config, taps: int, gap: float) -> float | list[float
 
 
 SETTLE = 1.0  # shortest: a wait the game needs (a card's count, a hero landing)
+
+
+SPEED_SETTLE = 2.5  # s after tapping the speed button before it's looked at again (it changes a moment later)
+SPEED_GREEN = 0.3  # share of the button that's green, at least (grey: just pressed, not to be tapped)
+
+
+def speed_up(game: Game, cfg: Config) -> bool:
+    """Tap the speed button if it shows "1x" on the screen last taken, so the
+    battle plays at 4x. It usually shows only in a battle's last minute;
+    during some events, from the start. Asked once the whole army is down,
+    heroes and siege too, and their abilities fired (sped up sooner, the
+    troops walk in before the rest are placed), then on each look while the
+    battle runs. The button toggles: tapped again it goes back to 1x. So it
+    is tapped only when it reads "1x" (not "4x", which the 1x picture
+    matches nearly as well), is green (grey: just pressed), and wasn't
+    tapped in the last SPEED_SETTLE seconds."""
+    if not cfg.attack.speed_up or not game.has(T.SPEED):
+        return False
+    if game.clock() - getattr(game, "speed_tapped_at", -SPEED_SETTLE) < SPEED_SETTLE:
+        return False
+    one = game.find(T.SPEED)
+    if one is None:
+        return False
+    if game.has(T.SPEED_ON):
+        four = game.find(T.SPEED_ON, threshold=0.3, region=Rect(one.x - one.w, one.y - one.h, one.w * 2, one.h * 2))
+        if four is not None and four.score >= one.score:
+            return False  # already 4x
+    box = game.screen[max(one.y - one.h // 2, 0):one.y + one.h // 2, max(one.x - one.w // 2, 0):one.x + one.w // 2]
+    hsv = cv2.cvtColor(box, cv2.COLOR_BGR2HSV) if box.size else None
+    if hsv is None or float(((hsv[:, :, 0] >= 30) & (hsv[:, :, 0] <= 90) & (hsv[:, :, 1] >= 90)).mean()) < SPEED_GREEN:
+        return False  # grey: pressed a moment ago, changing
+    game.tap_match(one)
+    game.speed_tapped_at = game.clock()
+    log.info("Battle speed: 4x")
+    return True
+
+
+DAMAGE_JUMP = 30  # league: an Overall Damage reading this many points above the last one is a misread
+LEAGUE_TAPS = 12  # league bonus farming: taps in one go, at least (fewer looks at the card between)
+LEAGUE_LOOK = 0.5  # s between looks at the Overall Damage while waiting for it
+LEAGUE_READS = 2  # readings in a row at the damage wanted before leaving (one misread doesn't end it)
+DAMAGE_FONT = "fonts/capital"  # the Overall Damage's digits: the same white outlined ones as the Capital map's %
+
+
+def league_settings(cfg: Config) -> Config:
+    """The settings a league bonus battle is fought with: everything down at
+    once, as fast as it goes, round the whole base (heroes too, their
+    abilities straight away, the Earthquakes anywhere); no waves, walks,
+    funnels or waits that only pay off in a long battle. The battle is left
+    on the Overall Damage (see :func:`finish_battle`), not the loot."""
+    a = cfg.attack
+    fast = replace(a, placement="spread", waves=1, troop_speed=9, wave_speed=9, hero_walk="off", funnel="off",
+                   quake_aim="spots", spell_placement="spread", hero_ability_delay=0.0, ability_health=0.0,
+                   taps_per_batch=max(a.taps_per_batch, LEAGUE_TAPS),
+                   end_at_loot_share=0.0)  # (the bonus wants the damage: not left once most of the loot is in)
+    return replace(cfg, attack=fast)
+
+
+def damage_font(game: Game):
+    try:
+        return game.vision.font(DAMAGE_FONT)
+    except (FileNotFoundError, ValueError, AttributeError):
+        return None
 
 
 def button_row_top(game: Game) -> int | None:
@@ -228,6 +304,7 @@ class DeployPoints:
         self.war_map = False  # a clan war base: the red line isn't judged by the ground around it
         self.dropped: dict[str, int] = {}  # troop taps per side
         self.spots: list[tuple[str, Point, float]] = []  # where units went out: side, point, how many
+        self.all_round = False  # league bonus farming: each batch round every side, a tap each (not one side's)
 
     def __iter__(self) -> DeployPoints:
         return self
@@ -507,23 +584,75 @@ def quake_spots(first: Point, edges: dict[str, list[Point]], center: Point | Non
 
 def cast_quakes(game: Game, card: Card, spots: Iterator[Point], count: int | None, cfg: Config) -> None:
     """The Earthquakes on ``card``, ``quakes_per_spot`` on a spot, then the
-    next ones on the next spot, until the card's spent. Fewer than that left
-    over go on the last spot with the others: too few alone to open a wall."""
+    next ones on the next spot, until the card's spent. Half a spot's worth
+    or more left over get a spot of their own (11 by 4: 4, 4 and 3, not 4 and
+    7 piled up on one); fewer join the last spot: too few alone to do much."""
     per = cfg.attack.quakes_per_spot
     left = count
-    groups = QUAKE_SPOTS if count is None else max(1, count // per)
+    groups = QUAKE_SPOTS if count is None else max(1, count // per + (2 * (count % per) >= per))
     for group in range(groups):
         spot = next(spots)
         taps = per if left is None else (left if group == groups - 1 else min(per, left))
-        log.info("Earthquakes: %d on %s", taps, spot)
         game.tap(*card.center)
         _wait(game, cfg, 0.1, SETTLE)
-        game.tap_many([spot] * taps, jitter=3, pause=SPELL_GAP if _rhythm(cfg) else 0.0)
+        game.tap_many([spot] * taps, jitter=3, pause=max(SPELL_GAP, QUAKE_GAP) if _rhythm(cfg) else QUAKE_GAP)
         _wait(game, cfg, 0.3, SETTLE)
-        if left is not None:
+        if left is None:
+            log.info("Earthquakes: %d on %s", taps, spot)
+        else:
             left -= taps
-        if (left is not None and left <= 0) or armybar.is_spent(game.refresh(), card, cfg.bar):
+            went = taps - _top_up_quakes(game, card, spot, left, taps, cfg)
+            log.info("Earthquakes: %d of %d on %s", went, taps, spot)
+        # (a known count was just checked on a screen taken after the taps)
+        if (left is not None and left <= 0) or armybar.is_spent(
+                game.screen if left is not None else game.refresh(), card, cfg.bar):
             return
+
+
+QUAKE_GAP = 0.12  # s between Earthquakes on one spot at the least: taps on one spot closer than
+# that, the game took some as one (issue 28: 2 or 3 of 4 went down)
+QUAKE_TOP_UPS = 2  # times the Earthquakes a spot missed are tapped again
+
+
+def _settled_count(game: Game, card: Card, cfg: Config) -> int | None:
+    """The card's count once it reads the same twice running (the number
+    can lag the last spell by a moment), or ``None`` if it won't settle or
+    can't be read."""
+    first = read_count(game, card, cfg)
+    for _ in range(3):
+        game.wait(0.25, exact=True)
+        game.refresh()
+        now = read_count(game, card, cfg)
+        if now == first:
+            return now
+        first = now
+    return None
+
+
+def _top_up_quakes(game: Game, card: Card, spot: Point, left: int, taps: int, cfg: Config) -> int:
+    """After ``taps`` Earthquakes on ``spot``: the card should hold ``left``.
+    Any it still holds beyond that didn't go down, so they're tapped there
+    again, slower, a few times at most; never more than the spot was meant
+    to get (the rest are the next spot's). Returns how many still didn't go."""
+    missing = 0
+    for attempt in range(QUAKE_TOP_UPS + 1):
+        if armybar.is_spent(game.refresh(), card, cfg.bar):
+            return 0  # all gone (no count to read on a spent card)
+        now = read_count(game, card, cfg)
+        if now is not None and now > left:  # (a count still catching up reads high, never low)
+            now = _settled_count(game, card, cfg)
+        if now is None or now <= left:
+            return 0 if now is not None else missing  # all went down, or there's no telling
+        missing = min(now - left, taps)
+        if attempt == QUAKE_TOP_UPS:
+            break
+        log.info("Earthquakes: %d of %d didn't go down on %s; again", missing, taps, spot)
+        game.tap(*card.center)
+        _wait(game, cfg, 0.15, SETTLE)
+        game.tap_many([spot] * missing, jitter=3, pause=QUAKE_GAP * 2)
+        _wait(game, cfg, 0.3, SETTLE)
+    log.warning("Earthquakes: %d of %d still didn't go down on %s", missing, taps, spot)
+    return missing
 
 
 # Earthquakes on the troops' way in ("path"): each spot this share of the way
@@ -669,6 +798,64 @@ def cast_together(game: Game, card: Card, spot: Point, count: int | None, cfg: C
         deploy_card(game, card, itertools.repeat(spot), cfg)
 
 
+RIM_REACH = 0.45  # league spells: this share of the way from the base's centre out to its deploy diamond (the outer buildings)
+RIM_ISO = 0.75  # the map's diamond: its half-height at most this share of its half-width
+RIM_FINGERS = 2  # league spells: this many go down together, as with two fingers
+RIM_PACE = (0.06, 0.14)  # s between one pair and the next, at random
+RIM_GAP = 0.04  # s between the two fingers of a pair
+
+
+def rim_points(edges: dict[str, list[Point]], center: Point | None, count: int, rng=None,
+               reach: float = RIM_REACH) -> list[Point]:
+    """``count`` spots evenly round the base's outer part (not its middle),
+    from a random start, a little in or out and round at random."""
+    # A diamond, as the map is (an oval through the deploy points reaches out
+    # past the base's corners, onto the grass the troops went down on). Its
+    # width from the side points; its height no more than the map's shape
+    # allows (the top and bottom points are cut short by the screen).
+    every = [p for pts in edges.values() for p in pts]
+    cx, cy = center or base_center(edges)
+    left = [p for side in ("nw", "sw") for p in edges.get(side, [])]
+    right = [p for side in ("ne", "se") for p in edges.get(side, [])]
+    if left and right:
+        # The diamond's left and right corners are level with its middle
+        # (the top and bottom points are cut short by the screen's edges).
+        low, high = min(left), max(right)
+        cx, cy = (low[0] + high[0]) / 2, (low[1] + high[1]) / 2
+    rx = max(max(abs(x - cx) for x, _ in every), 1)
+    ry = rx * RIM_ISO
+    start = rng.random() * math.tau if rng is not None else 0.0
+    step = math.tau / max(count, 1)
+    spots = []
+    for k in range(count):
+        angle, out = start + k * step, reach
+        if rng is not None:
+            angle += rng.uniform(-SPREAD_JITTER, SPREAD_JITTER) * step / 2
+            out *= 1 + rng.uniform(-SPREAD_JITTER, SPREAD_JITTER) / 2
+        c, s = math.cos(angle), math.sin(angle)
+        edge = abs(c) + abs(s)  # (on the diamond |x|/rx + |y|/ry = 1)
+        spots.append((round(cx + rx * c / edge * out), round(cy + ry * s / edge * out)))
+    return spots
+
+
+def cast_round_rim(game: Game, card: Card, edges: dict[str, list[Point]], center: Point | None,
+                   count: int | None, cfg: Config) -> None:
+    """Every spell on ``card`` (the Totems of a league bonus battle) evenly
+    round the base's outer part, two at a time as with two fingers, a
+    short pause between pairs: quick, not a burst in one blink."""
+    taps = count or SPELL_BURST
+    spots = rim_points(edges, center, taps, game.rng)
+    game.tap(*card.center)
+    _wait(game, cfg, 0.1, SETTLE)
+    for i in range(0, len(spots), RIM_FINGERS):
+        game.tap_many(spots[i:i + RIM_FINGERS], jitter=4, pause=RIM_GAP)
+        if i + RIM_FINGERS < len(spots):
+            game.wait(game.rng.uniform(*RIM_PACE), exact=True)
+    _wait(game, cfg, 0.3, SETTLE)
+    if not armybar.is_spent(game.refresh(), card, cfg.bar):
+        deploy_card(game, card, itertools.cycle(rim_points(edges, center, max(taps, 4), game.rng)), cfg)
+
+
 def batches_for(count: int | None, cfg: Config) -> int:
     """How many batches a card of ``count`` units may take: enough for half
     its taps to be refused (too close to the base, or lost in a burst), and
@@ -709,7 +896,9 @@ def deploy_card(game: Game, card: Card, points: Iterator[Point], cfg: Config,
     before = game.refresh()
     left = count or read_count(game, card, cfg)
     # "Hold to deploy": a big card goes down in a mix of held fingers and bursts of taps.
-    holding = card.kind == "troop" and isinstance(points, DeployPoints) and game.uses("hold_deploy")
+    round_sides = isinstance(points, DeployPoints) and points.all_round
+    holding = (card.kind == "troop" and isinstance(points, DeployPoints) and not round_sides
+               and game.uses("hold_deploy"))
     batches = batches_for(left, cfg)
     for _ in range(batches):
         game.tap(*card.center)
@@ -725,8 +914,12 @@ def deploy_card(game: Game, card: Card, points: Iterator[Point], cfg: Config,
                 continue
             holding = False  # nothing went: taps from here (they show which side is refused)
         size = human.batch(game.rng, acfg.taps_per_batch, _rhythm(cfg))
+        if round_sides and left:
+            size = max(size, left)  # league bonus farming: the whole card in one go, round every side
         taps = min(size, left) if left else size
-        if isinstance(points, DeployPoints):
+        if round_sides:
+            side, batch = None, points.round(taps)  # every side in turn, a tap each: round the whole base
+        elif isinstance(points, DeployPoints):
             side, batch = points.take(taps)
         else:
             side, batch = None, [next(points) for _ in range(taps)]
@@ -750,6 +943,10 @@ def deploy_card(game: Game, card: Card, points: Iterator[Point], cfg: Config,
                 stalled = 0
                 before = game.refresh()
                 continue
+        if round_sides and taps and left and now and (left - now) < taps * ROUND_LANDED:
+            # Some sides' points are in the red area (a base that fills the map): a side at a
+            # time from here, so the refused ones show up and are dropped.
+            round_sides = False
         if went:
             stalled, progressed = 0, True
             if side is not None:
@@ -785,6 +982,7 @@ def deploy_card(game: Game, card: Card, points: Iterator[Point], cfg: Config,
 
 
 LINE_POINTS = 12  # of a side's points a slide goes through at most
+ROUND_LANDED = 0.8  # a round-every-side burst with fewer of its taps landing: a side at a time after it
 HOLD_MISSES = 3  # holds in a session that dropped nothing before it goes back to taps for good
 
 
@@ -908,12 +1106,13 @@ def warden_points(game: Game, singles: list[Card], points: Iterator[Point]) -> d
 
 HERO_BEAT = 0.6  # human-like: about this long between the last troops and the first hero
 HERO_GAP = 0.35  # ...and between one hero and the next (else 0.08 s)
+QUICK_HERO_GAP = 0.09  # league bonus farming: s between the taps of the heroes' one burst
 
 
 def place_singles(game: Game, cards: list[Card], points: Iterator[Point], cfg: Config,
                   fallback: Iterator[Point] | None = None,
                   own: dict[Card, Iterator[Point]] | None = None,
-                  tapped: dict[int, float] | None = None) -> list[Card]:
+                  tapped: dict[int, float] | None = None, quick: bool = False) -> list[Card]:
     """Put every hero and siege machine down in one quick pass (card, point,
     next card...), then check them all on one screenshot; any the game
     refused get another point. ``own``: points for some cards alone (the
@@ -926,13 +1125,21 @@ def place_singles(game: Game, cards: list[Card], points: Iterator[Point], cfg: C
     waiting = human.order(game.rng, cards, on)  # human-like: not always left to right
     # The Warden first, straight after the troops he's to guard (they're already walking in).
     waiting = [c for c in waiting if c in own] + [c for c in waiting if c not in own]
-    if waiting:
+    if waiting and not quick:
         _beat(game, cfg, HERO_BEAT)  # a moment after the troops, as a person looks where to put them
     for attempt in range(SINGLE_TRIES):
         if not waiting:
             break
         late = fallback is not None and attempt >= SINGLE_TRIES // 2
-        for card in waiting:
+        if quick:
+            # League bonus farming: every hero in one go, card then spot, card then spot.
+            taps = [p for card in waiting for p in (card.center, next(fallback if late else own.get(card, points)))]
+            game.tap_many(taps, jitter=3, pause=QUICK_HERO_GAP)
+            now = game.clock()
+            for card in waiting:
+                if tapped is not None:
+                    tapped[id(card)] = now
+        for card in ([] if quick else waiting):
             source = fallback if late else own.get(card, points)
             game.tap(*card.center)
             _wait(game, cfg, 0.08, SETTLE)
@@ -998,7 +1205,8 @@ STAR_BATTLE = 240.0  # s a battle fought for stars may take: its 3 min, the 30 s
 
 
 def finish_battle(game: Game, cfg: Config, target: Loot | None = None,
-                  room: dict[str, int] | None = None, for_stars: bool = False) -> float | None:
+                  room: dict[str, int] | None = None, for_stars: bool = False,
+                  league: bool = False) -> float | None:
     """Wait for the battle to end. End it early once the available loot has
     stopped dropping, or once ``end_at_loot_share`` of the ``target`` loot
     (what scouting reported) is taken, or once what's taken fills the
@@ -1006,7 +1214,9 @@ def finish_battle(game: Game, cfg: Config, target: Loot | None = None,
     Returns the share of ``target`` taken, if it could be read.
     ``for_stars``: none of that: the battle is left to end by itself (all
     destroyed, the troops gone, or the game's own clock), however the
-    loot stands."""
+    loot stands. ``league``: league bonus farming: it ends as soon as the
+    Overall Damage reaches ``league_bonus_damage`` too, looked at often
+    (the battle plays at 4x)."""
     acfg = cfg.attack
     if for_stars:
         acfg = replace(acfg, end_when_no_loot=False, end_at_loot_share=0.0, end_when_full=False,
@@ -1024,6 +1234,15 @@ def finish_battle(game: Game, cfg: Config, target: Loot | None = None,
     enough_share = human.end_share(game.rng, acfg.end_at_loot_share, spread)
     room = room if target and acfg.end_when_full else None
     filled_once = False  # full on two readings in a row: one misread doesn't end it
+    font = damage_font(game) if league and not for_stars else None
+    if league and not for_stars and font is None:
+        log.warning("League bonus farming: the Overall Damage can't be read (no %s font); the battle ends by "
+                    "the loot rules instead", DAMAGE_FONT)
+    wanted = round(acfg.league_bonus_damage * 100)
+    at_damage = 0  # readings in a row at the damage wanted
+    damage = None
+    best_damage = -1  # (league: the highest Overall Damage read, and when it last went up)
+    loot_read_at = None  # when the loot was last read (league: not on every look)
     while True:
         # Nothing is tapped while the battle plays out, so the check made before
         # taps is made here: a game that crashed or closed shows no loot, and
@@ -1034,24 +1253,38 @@ def finish_battle(game: Game, cfg: Config, target: Loot | None = None,
             continue
         if can_return and game.find(T.RETURN_HOME):
             break
-        if acfg.speed_up and game.has(T.SPEED) and game.click(T.SPEED):
-            log.info("Battle speed: 4x")
+        if speed_up(game, cfg):
             game.refresh()
         now = game.clock()
-        loot = (loot_left(game, cfg) if acfg.end_when_no_loot or (target and acfg.end_at_loot_share) or room
-                else None)
+        if font is not None:
+            damage = result.overall_damage(game.screen, font)
+            at_damage = at_damage + 1 if damage is not None and damage >= wanted else 0
+            if damage is not None and damage > best_damage and (best_damage < 0 or damage - best_damage <= DAMAGE_JUMP):
+                # Still rising (defences give damage but no loot): the battle isn't stalled.
+                best_damage, last_change = damage, now
+        looks_at_loot = acfg.end_when_no_loot or (target and acfg.end_at_loot_share) or room
+        if font is not None and loot_read_at is not None and now - loot_read_at < 2:
+            looks_at_loot = False  # (league: the damage is looked at often, the loot as before)
+        loot = loot_left(game, cfg) if looks_at_loot else None
+        if looks_at_loot:
+            loot_read_at = now
         # Loot only goes down in a battle: a higher reading is a misread.
         if loot is not None and loot != last_loot and (last_loot is None or _not_more(loot, last_loot)):
             last_loot, last_change = loot, now
         stalled = acfg.end_when_no_loot and last_loot is not None and now - last_change >= no_loot
         share = taken_share(target, last_loot, cfg) if target and last_loot else 0.0
         enough = bool(acfg.end_at_loot_share) and share >= enough_share
-        filled_now = bool(room) and loot is not None and storages_filled(target, last_loot, room)
-        full, filled_once = filled_once and filled_now, filled_now
-        if stalled or enough or full or now - started >= acfg.battle_timeout:
-            reason = ("the storages are full" if full else
+        full = False
+        if looks_at_loot:  # (league: two readings in a row, not two looks at one)
+            filled_now = bool(room) and loot is not None and storages_filled(target, last_loot, room)
+            full, filled_once = filled_once and filled_now, filled_now
+        bonus = at_damage >= LEAGUE_READS
+        if bonus or stalled or enough or full or now - started >= acfg.battle_timeout:
+            reason = ("%d%% damage: the league bonus is paid in full" % damage if bonus else
+                      "the storages are full" if full else
                       "%d%% of the loot taken" % (share * 100) if enough else
-                      "no loot gained for %ds" % no_loot if stalled else "time limit")
+                      ("no loot or damage gained for %ds" if font is not None else "no loot gained for %ds") % no_loot
+                      if stalled else "time limit")
             log.info("Ending battle: %s%s", reason,
                      " (to keep attacking, turn off Attacking → End battle when storages are full)" if full else "")
             if stalled:
@@ -1068,7 +1301,10 @@ def finish_battle(game: Game, cfg: Config, target: Loot | None = None,
             _beat(game, cfg, 0.5)  # a moment to read the question
             game.click_when_visible(T.SURRENDER_OK, timeout=5)
             break
-        _wait(game, cfg, 2, note=False)  # (a longer look doesn't make the battle longer)
+        if font is not None:
+            game.wait(LEAGUE_LOOK, exact=True)  # (at 4x, 70% can come in a few seconds)
+        else:
+            _wait(game, cfg, 2, note=False)  # (a longer look doesn't make the battle longer)
     if for_stars and game.star_plan:
         game.star_plan.setdefault("times", {})["end"] = game.clock()
     taken = taken_share(target, last_loot, cfg) if target and last_loot else None
@@ -1433,6 +1669,36 @@ def lure_out(game: Game, cfg: Config, card: Card, at: Point) -> None:
     _wait(game, cfg, cfg.attack.star_lure_wait, SETTLE)
 
 
+
+BATTLE_REFOCUS_SETTLE = 3.0  # back in front, the game takes a moment before it answers a pinch
+
+
+def mend_slid_pinch(game: Game) -> bool:
+    """A zoom-out that only dragged the map (the game thinks a finger is
+    still down) leaves every tap of the battle unanswered too: before
+    anything is deployed, the game is put in the background and brought
+    back (it stays on this base, its timer running) and zoomed out again.
+    True if the pinch works again; the bot reopens the game after the
+    battle when it doesn't."""
+    refocus = getattr(game.device, "refocus_app", None)
+    if not game.pinch_pans or refocus is None or not game.package:
+        return False
+    log.info("Zooming out moved the view instead: putting the game in the background and back before deploying")
+    try:
+        refocus(game.package)
+    except Exception as exc:  # noqa: BLE001 (the battle goes on as it is)
+        log.info("Couldn't put the game in the background and back (%s)", exc)
+        return False
+    game.wait(BATTLE_REFOCUS_SETTLE)
+    game.pinch_pans = False
+    game.zoom_out(force=True)
+    if game.pinch_pans:
+        log.warning("Zooming out still moves the view; deploying as it is")
+        return False
+    log.info("Zooming out works again")
+    return True
+
+
 def attack(game: Game, cfg: Config, target: Loot | None = None, room: dict[str, int] | None = None,
            for_stars: bool = False, war_map: bool = False) -> float | None:
     """Attack the base on screen; ``target`` is its loot as scouted, and
@@ -1445,12 +1711,18 @@ def attack(game: Game, cfg: Config, target: Loot | None = None, room: dict[str, 
     The bar goes troops, siege machines, heroes, spells. When it holds more
     than fits on the screen, it's deployed a screenful at a time, in that
     order, scrolling on until its end."""
+    league = cfg.attack.league_bonus and not for_stars
+    if league:
+        cfg = league_settings(cfg)
+        log.info("League bonus farming: the whole army down at once, leaving at %d%% damage",
+                 cfg.attack.league_bonus_damage * 100)
     acfg = cfg.attack
     game.star_plan = {"times": {"start": game.clock()}} if for_stars else {}
     game.look_around()  # "Look around before deploying": before the view is measured
     # The game centres a battle's view by itself, at the village's zoom: a
     # zoom-out is all it needs.
     game.zoom_out()
+    mend_slid_pinch(game)
     game.deploy_origins = {}  # (filled by deploy_edges)
     game.deploy_outline = []
     edges, center = deploy_edges(game, cfg, war_map)
@@ -1511,6 +1783,7 @@ def attack(game: Game, cfg: Config, target: Loot | None = None, room: dict[str, 
     edge_points = cycle_points(troop_edges, sides, game.rng, _rhythm(cfg), spare)
     fixed_points = cycle_points(fixed_lines(game.size[0], cfg), sides, game.rng, _rhythm(cfg), spare)
     edge_points.war_map = fixed_points.war_map = war_map
+    edge_points.all_round = league
     def aim() -> Point:
         """The spells' one spot: following the push when there is one; a new one each battle."""
         game.spell_spot = spell_aim(edges, center, focus, acfg, game.rng, getattr(game, "spell_spot", None))
@@ -1557,6 +1830,7 @@ def attack(game: Game, cfg: Config, target: Loot | None = None, room: dict[str, 
         edge_points = cycle_points(troop_edges, sides, game.rng, _rhythm(cfg), spare)
         fixed_points = cycle_points(fixed_lines(game.size[0], cfg), sides, game.rng, _rhythm(cfg), spare)
         edge_points.war_map = fixed_points.war_map = war_map
+        edge_points.all_round = league
         over_base = spell_points(edges, center, acfg.spell_reach, game.rng)
         spot = aim()
         quake_at = path_spots(troop_edges, center, sides) if quakes_first else quake_spots(spot, edges, center,
@@ -1566,7 +1840,9 @@ def attack(game: Game, cfg: Config, target: Loot | None = None, room: dict[str, 
     if focus and read.lure is not None:
         side = plan.nearest_side(edges, [s for s in focus if edges.get(s)], read.castle)
         lure_out(game, cfg, read.lure, plan.nearest_point(edges, side, read.castle))
-    lead = bool(focus) and read.kind == "ground"  # the heroes and siege open the way for a ground army
+    # The heroes and siege open the way for a ground army, and behind the Earthquakes they clear the
+    # outside of the way in before the troops go down (so the troops go on inside, not round the edge).
+    lead = (bool(focus) and read.kind == "ground") or quakes_first
     led_at: float | None = None  # when they went (their abilities' clocks start there)
 
     scrolls = not bar_fits(game, cfg) and scroll_bar(game, cfg)
@@ -1616,12 +1892,33 @@ def attack(game: Game, cfg: Config, target: Loot | None = None, room: dict[str, 
             if here:
                 led_at = game.clock()
         if lead and singles and not here:  # (heroes that opened a funnel led already: the Warden stays with the army)
-            log.info("Ground army: the heroes and siege go first, to open the way")
+            log.info("%s: the heroes and siege go first, to open the way",
+                     "Behind the Earthquakes" if quakes_first else "Ground army")
             here = place_singles(game, singles, edge_points, cfg, fixed_points)
             if here:
                 led_at = game.clock() if led_at is None else led_at
                 _wait(game, cfg, acfg.star_ground_lead, SETTLE)
 
+        def cast_spells() -> None:
+            nonlocal spells
+            if spells and not league:  # (league: straight after the squad, no pause)
+                _beat(game, cfg, SPELL_BEAT)
+            if spells and league:
+                log.info("Spells: %d card(s) round the base's outer part, straight after the squad", len(spells))
+            for card in spells:
+                if card in quakes:
+                    cast_quakes(game, card, quake_at, counts.get(card), cfg)
+                elif acfg.spell_placement == "together":
+                    cast_together(game, card, spot, counts.get(card), cfg)
+                elif league:
+                    cast_round_rim(game, card, edges, center, counts.get(card), cfg)
+                else:
+                    deploy_card(game, card, over_base, cfg)
+            spells = []
+
+        if league and troops:
+            # The biggest card (the squad) first, then the Totems that tank for it, then the rest.
+            troops = sorted(troops, key=lambda c: -(counts.get(c) or 0))
         # Troops in waves: earlier waves send a share of each card (by its
         # count, or one batch when unreadable); the last wave empties them.
         remaining = dict(counts)
@@ -1637,6 +1934,8 @@ def attack(game: Game, cfg: Config, target: Loot | None = None, room: dict[str, 
                     troops_out = troops_out or went is not None
                     if went is False:
                         unfinished.append(card)
+                    if league and card is troops[0]:
+                        cast_spells()
                     continue
                 left = remaining.get(card)
                 share = (human.share(game.rng, left, waves - wave, _rhythm(cfg)) if left else
@@ -1647,9 +1946,13 @@ def attack(game: Game, cfg: Config, target: Loot | None = None, room: dict[str, 
             if not last:
                 _wait(game, cfg, acfg.wave_delay)
 
+        if league:
+            # The squad, its Totems, the other troops, then the heroes (4x once all is down).
+            cast_spells()
+            spells = []
         rest = [c for c in singles if c not in here]
         own = warden_points(game, rest, edge_points)
-        here += place_singles(game, rest, edge_points, cfg, fixed_points, own)
+        here += place_singles(game, rest, edge_points, cfg, fixed_points, own, quick=league)
         for card in unfinished:
             # Troops a card still holds: another go, now the others are down.
             if not armybar.is_spent(game.refresh(), card, cfg.bar):
@@ -1661,15 +1964,7 @@ def attack(game: Game, cfg: Config, target: Loot | None = None, room: dict[str, 
             began = game.clock()
             _wait(game, cfg, acfg.star_spell_delay, SETTLE)
             spells_held = game.clock() - began
-        if spells:
-            _beat(game, cfg, SPELL_BEAT)
-        for card in spells:
-            if card in quakes:
-                cast_quakes(game, card, quake_at, counts.get(card), cfg)
-            elif acfg.spell_placement == "together":
-                cast_together(game, card, spot, counts.get(card), cfg)
-            else:
-                deploy_card(game, card, over_base, cfg)
+        cast_spells()
         # One more go for any hero that was refused, now on other points.
         here += place_singles(game, [c for c in singles if c not in here], edge_points, cfg, fixed_points, own)
         here += walked
@@ -1710,7 +2005,9 @@ def attack(game: Game, cfg: Config, target: Loot | None = None, room: dict[str, 
         else:
             fire_abilities_on_time(game, placed, cfg, since)
         log.info("Activated %d hero/siege card(s)", len(placed))
-    return finish_battle(game, cfg, target, room, for_stars)
+    game.refresh()
+    speed_up(game, cfg)  # everything is down: troops, spells, heroes and siege (and their abilities)
+    return finish_battle(game, cfg, target, room, for_stars, league)
 
 
 ABILITY_CHECK = 0.5  # seconds between looks at the heroes' health

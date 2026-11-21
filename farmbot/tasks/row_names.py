@@ -93,7 +93,7 @@ _PLAIN = {name: _plain(name) for name in KNOWN}
 NEWER_EQUIPMENT: tuple[str, ...] = ()
 EQUIPMENT = tuple(dict.fromkeys((*gamedata.EQUIPMENT.values(), *NEWER_EQUIPMENT)))
 # The picker's groups, by hero, as the Hero Equipment tab shows them (seen on
-# Bix, 17 Nov 2026; every hero's pieces by the wiki, 18 Nov 2026): the
+# 17 Nov 2026; every hero's pieces by the wiki, 18 Nov 2026): the
 # Common pieces, then the Epic ones. A piece under no hero goes under "Other"
 # (a tab only when there is one).
 _BY_HERO = {

@@ -198,6 +198,8 @@ PICTURES: list[Picture] = [
             "\"Change Heroes\".", "Builder base"),
     Picture(T.SPEED, "1x speed (home)", "Home battle, last minute, right side: the green \"1x\" button.",
             "Battle speed"),
+    Picture(T.SPEED_ON, "4x speed (home)", "Home battle, right side: the same button once tapped, reading "
+            "\"4x\" (so it isn't tapped back to 1x).", "Battle speed"),
     Picture(T.BB_HERO_MACHINE, "Battle Machine card", "Builder battle, bottom left: the Battle Machine's hero card "
             "(below its health bar).", "Builder base"),
     Picture(T.BB_HERO_COPTER, "Battle Copter card", "Builder battle, bottom left: the Battle Copter's hero card "

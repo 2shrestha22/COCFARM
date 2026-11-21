@@ -18,6 +18,45 @@ from farmbot.update import STATE, _load, _save, parse_version
 KINDS = ["New", "Improved", "Fixed"]
 
 NOTES: dict[str, list[tuple[str, str, str]]] = {
+    "1.9.5": [
+        ("New", "League bonus farming",
+         "Turn it on under Attacking → Ending the battle: every base is attacked, the whole army goes down at once "
+         "round the base (troops on every side, spells such as Totems spread round it before the heroes), and the "
+         "battle is left as soon as the Overall Damage reaches 70% (or what you set), where the league bonus is paid "
+         "in full. Most battles take well under a minute."),
+        ("Fixed", "Barch squads",
+         "The Barch squad's green card is now seen in the troop bar, so armies built on it are deployed."),
+        ("Fixed", "Every Earthquake goes down",
+         "Earthquakes went down so fast on one spot that the game sometimes took only 2 or 3 of the 4. They're now "
+         "a moment apart, and the card's count is checked after each spot: any that didn't go down are cast there "
+         "again."),
+        ("Improved", "Earthquakes not piled up",
+         "Earthquakes left over after 4 on each spot get a spot of their own when there are 2 or more (11: 4, 4 "
+         "and 3), instead of all going on the last spot."),
+        ("Improved", "Heroes ahead of the army behind Earthquakes",
+         "With Earthquakes on the way in, the heroes and siege machine now go down first and clear the outside "
+         "there; the troops follow a few seconds later and go on in through the open walls."),
+        ("Improved", "4x sooner",
+         "The 1x button is pressed once the whole army is down (troops, spells, heroes and siege), whenever it "
+         "shows: straight away during events that show it from the battle's start, in the last minute otherwise."),
+        ("Fixed", "A zoom-out that slides the view",
+         "When the emulator stops passing two-finger zooms (LDPlayer, when its ctrl+scroll zoom stops too), zooming "
+         "out slid the view over, and in a battle the game then took no taps at all. The view is now put back and "
+         "the game is sent to the background and back (about 10 seconds), which brings zooming back; in a battle "
+         "this happens before anything is deployed, on the same base. The game is reopened only if that fails."),
+        ("Fixed", "The village left off to one side after a battle",
+         "Since the game's latest update, the village no longer comes back centred after a battle, so collecting, "
+         "upgrades and the next battles went to one side. Before any village job, the village is now dragged back "
+         "to where the game showed it when it loaded. The village is only zoomed out and centred when a job needs "
+         "it (collecting, the loot cart, gravestones, the builder base), so most rounds go straight to the next "
+         "battle."),
+        ("Improved", "Spells closer to the base's middle",
+         "In league bonus farming, spells such as Totems now go round the base a little in from its edge, among "
+         "the buildings, instead of out where the troops are dropped."),
+        ("Fixed", "Clan chat opened while collecting",
+         "A resource bubble right next to the clan chat button could open the chat instead. Bubbles beside the "
+         "screen's buttons are now skipped."),
+    ],
     "1.9.3": [
         ("Fixed", "Troops round bases on busy sceneries",
          "On sceneries busy right round the map (sweets, a temple, city blocks, factories, a harbour) and on "

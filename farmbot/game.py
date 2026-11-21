@@ -112,6 +112,7 @@ class T:
     END_BATTLE = "buttons/end_battle"  # directory: "End Battle", or "Surrender" once units are out
     SURRENDER_OK = "buttons/okay"
     SPEED = "buttons/speed_1x"  # "1x" in the last minute of a home battle: tap for 4x
+    SPEED_ON = "buttons/speed_4x"  # the same button once tapped: the battle plays at 4x (it matches "1x" closely)
     RETURN_HOME = "buttons/return_home"  # directory: "Return Home", or "Claim Reward" after a star bonus
     EVENT_CHEST = "buttons/event_chest"  # chest room shown after some battles during events
     # "Skip", bottom right of every chest room: the room's scenery changes with
@@ -344,6 +345,36 @@ VIEW_STILL = 0.12
 SELECTED_TOP = 0.6  # a selected building's buttons show below this share of the screen's height
 
 
+# A pinch the emulator turned into a one-finger drag (LDPlayer, once its
+# multi-touch stops working: its ctrl+scroll zoom fails then too): the map
+# moves over instead of shrinking. Told apart by how much of the view simply
+# slid over (a zoom slides nothing): further than PAN_LEAST of the screen's
+# width, and plainly a slide (phase correlation's peak, PAN_SURE: a slide
+# reads 0.5-0.85, a zoom under 0.35).
+PAN_LEAST = 0.04
+PAN_SURE = 0.42
+PAN_BACK_MS = 900  # the drag back: slow, so the map doesn't fling on past where it's let go
+
+
+def pinch_slid(before: np.ndarray, after: np.ndarray) -> tuple[int, int] | None:
+    """How far the map slid between two screens (dx, dy), if it plainly
+    slid (rather than zoomed, or hardly moved); else None."""
+    if before.shape != after.shape:
+        return None
+    h, w = before.shape[:2]
+
+    def middle(screen: np.ndarray) -> np.ndarray:
+        part = cv2.resize(screen[h // 6:h * 5 // 6, w // 6:w * 5 // 6], None, fx=0.5, fy=0.5)
+        return cv2.cvtColor(part, cv2.COLOR_BGR2GRAY).astype(np.float32)
+
+    a, b = middle(before), middle(after)
+    (dx, dy), sure = cv2.phaseCorrelate(a, b, cv2.createHanningWindow(a.shape[::-1], cv2.CV_32F))
+    dx, dy = round(dx * 2), round(dy * 2)
+    if sure < PAN_SURE or math.hypot(dx, dy) < PAN_LEAST * w:
+        return None
+    return dx, dy
+
+
 def view_change(before: np.ndarray, after: np.ndarray) -> float:
     """How much the map moved between two screens: the share (0-1) of the
     middle of the screen that changed."""
@@ -438,6 +469,21 @@ def view_shift(reference: np.ndarray, screen: np.ndarray) -> tuple[int, int] | N
     return round(shift[0]), round(shift[1])
 
 
+CENTRE_NEAR = 20  # px: a village view this close to the centred one is left alone
+RECENTRE_DRAGS = 2
+RECENTRE_DRAG_MS = 300
+RECENTRE_SETTLE = 0.3
+
+
+def off_centre(reference: np.ndarray, screen: np.ndarray) -> tuple[int, int] | None:
+    """How far the map on ``screen`` has moved from ``reference``, if more
+    than CENTRE_NEAR px; None if not, or if the two can't be matched."""
+    shift = view_shift(reference, screen)
+    if shift is None or max(map(abs, shift)) <= CENTRE_NEAR:
+        return None
+    return shift
+
+
 SCOUT_Y = 0.42  # the look-around drags go through the middle of the map: the base, where nothing deploys
 SCOUT_NEAR = 6  # px: the view back this close counts as back
 SCOUT_FIXES = 3
@@ -504,6 +550,7 @@ class Game:
         self.deploy_origins: dict[str, str] = {}  # the last battle's deploy sides: where their points came from
         self.deploy_outline: list = []  # the last battle's whole base edge, every side (see deploy_edges)
         self.last_result = None  # the last battle's stars and damage, off its result screen (see attack.read_result)
+        self.pinch_pans = False  # a zoom-out moved the map instead (see _pinch_panned): the game wants a restart
         self.star_plan: dict = {}  # the last battle fought for stars: its plan and times (see farmbot/starlog.py)
         # This round's parts and what the habits add to them (farmbot/timings.py).
         self.ledger = Ledger(clock)
@@ -870,6 +917,10 @@ class Game:
                     return False
                 self.wait(0.5)
                 after = self.refresh()
+                moved = pinch_slid(before, after)
+                if moved is not None:
+                    self._pinch_panned(moved)
+                    return True
                 # The first pinch changing nothing isn't enough: a pinch the
                 # game missed (LDPlayer misses some) looks just the same as
                 # one on a view already all the way out. A second one tells.
@@ -883,6 +934,25 @@ class Game:
                 return True
             log.info("Zooming out selected a building: dropped it, zooming again")
         return True
+
+    def _pinch_panned(self, moved: tuple[int, int]) -> None:
+        """The pinch moved the map over instead of zooming it: the emulator
+        let only one of its two fingers through. Drag the map back where it
+        was (else troops go down beside a base that's half off the screen),
+        and say so: pinching again would only move it further. The bot
+        restarts the game, which brings the pinch back."""
+        dx, dy = moved
+        log.warning("Zooming out moved the view %+d,%+d px instead of zooming (the emulator's two-finger pinch "
+                    "isn't getting through; on LDPlayer its ctrl+scroll zoom stops too): dragging it back", dx, dy)
+        h, w = self.screen.shape[:2]
+        x, y = w // 2, round(h * 0.45)
+        # Back by as much, in two drags if it's far (one drag stops at the screen's edge).
+        for part in (0.5, 0.5) if abs(dx) > w // 3 or abs(dy) > h // 3 else (1.0,):
+            self.swipe(x, y, x - round(dx * part), y - round(dy * part), duration_ms=PAN_BACK_MS)
+            self.wait(0.6)
+        self.pinch_pans = True
+        self._zoomed_view = None
+        self.refresh()
 
     def _still_zoomed_out(self, screen: np.ndarray) -> bool:
         """``screen`` shows the very view the last full zoom-out ended on:
@@ -983,6 +1053,29 @@ class Game:
                 break
             self._drag_view(cx, cy, -shift[0], -shift[1])
         self.note("scout_look", 0.0, self.clock() - began)
+
+    def recentre(self, reference: np.ndarray) -> tuple[int, int] | None:
+        """Drag the map back to where it is on ``reference`` (the village as
+        the game centred it), if it has moved more than CENTRE_NEAR px. The
+        drags go through the middle of the screen. Returns how far it had
+        moved, or None if it hadn't (or the two views couldn't be matched)."""
+        w, h = self.size
+        cx, cy = w // 2, round(h * SCOUT_Y)
+        first = None
+        for _ in range(RECENTRE_DRAGS):  # one drag; a second only if the first fell short
+            shift = off_centre(reference, self.refresh())
+            if shift is None:
+                break
+            if first is None:
+                first = shift
+                log.info("The village view is %+d,%+d px off where the game put it: dragging it back", *shift)
+            dx, dy = -shift[0], -shift[1]
+            self.swipe(cx - dx // 2, cy - dy // 2, cx + dx - dx // 2, cy + dy - dy // 2, RECENTRE_DRAG_MS)
+            self.wait(RECENTRE_SETTLE, exact=True)
+        if first is not None:
+            # Still all the way out, only moved: the next zoom-out needn't pinch.
+            self._zoomed_view = self.refresh().copy()
+        return first
 
     def _drag_view(self, cx: int, cy: int, dx: int, dy: int) -> None:
         """Move the map by (dx, dy) with a drag through (cx, cy): two, when

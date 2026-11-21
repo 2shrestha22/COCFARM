@@ -306,6 +306,20 @@ COLLECTOR_PICTURES = {"gold": T.COLLECT_GOLD, "elixir": T.COLLECT_ELIXIR, "dark"
 COLLECTOR_THRESHOLD = 0.8  # the bubbles sit over busy village art
 
 
+# The village's own buttons (clan chat, the attack log, Battle, Build, the
+# shop, the profile, the resource bars): boxes as shares of the screen, x0, y0, x1, y1.
+SIDE_BUTTONS = ((0.0, 0.0, 0.12, 1.0), (0.88, 0.0, 1.0, 1.0), (0.0, 0.80, 1.0, 1.0),
+                (0.0, 0.0, 0.25, 0.15), (0.74, 0.0, 1.0, 0.30))
+
+
+def near_side_buttons(x: int, y: int, width: int, height: int) -> bool:
+    """(x, y) is on or beside one of the village's own buttons: a bubble
+    there is left for one nearer the middle (19 Nov: a Dark Elixir
+    bubble beside the chat button opened the clan chat)."""
+    fx, fy = x / width, y / height
+    return any(x0 <= fx <= x1 and y0 <= fy <= y1 for x0, y0, x1, y1 in SIDE_BUTTONS)
+
+
 def collect_resources(game: Game, kinds: tuple[str, ...] = ("gold", "elixir", "dark")) -> list[str]:
     """Empty full collectors (and the ice cube): one tap on a bubble
     collects every collector of that kind, so each kind in ``kinds`` with a
@@ -315,18 +329,24 @@ def collect_resources(game: Game, kinds: tuple[str, ...] = ("gold", "elixir", "d
     kinds collected."""
     collected = []
     for kind in kinds:
-        seen = [b for b in bubbles.find(game.refresh()) if b.kind == kind]
+        screen = game.refresh()
+        h, w = screen.shape[:2]
+        seen = [b for b in bubbles.find(screen) if b.kind == kind and not near_side_buttons(b.x, b.y, w, h)]
         if seen:
-            game.tap(seen[0].x, seen[0].y)
+            # The one nearest the middle (any one collects them all).
+            best = min(seen, key=lambda b: abs(b.x - w / 2) + abs(b.y - h / 2))
+            game.tap(best.x, best.y)
             game.wait(0.8)
             collected.append(kind)
             continue
         name = COLLECTOR_PICTURES.get(kind)
         if name is None or not game.has(name):
             continue
-        bubble = game.find(name, threshold=COLLECTOR_THRESHOLD)
-        if bubble is None:
+        found = [m for m in game.find_all(name, threshold=COLLECTOR_THRESHOLD)
+                 if not near_side_buttons(m.x, m.y, w, h)]
+        if not found:
             continue
+        bubble = min(found, key=lambda m: abs(m.x - w / 2) + abs(m.y - h / 2))
         game.tap_match(bubble)
         game.wait(0.8)
         collected.append(kind)
@@ -509,11 +529,14 @@ def upgrade_walls(game: Game, cfg: WallsConfig, read_resources: Callable[..., Lo
         loot = handed["loot"]
     else:
         # Selecting a wall zooms in on it, and over busy buildings the resource
-        # numbers can't be read: zoom out first (a pinch finger on a building
-        # left selected would move it).
+        # numbers can't be read: zoomed out when they don't read (a pinch
+        # finger on a building left selected would move it). Back from a
+        # battle they read as the village is: it's left be.
         game.deselect()
-        game.zoom_out()
         loot = read_resources()
+        if not loot:
+            game.zoom_out()
+            loot = read_resources()
     budget = wall_budget(cfg.use, loot, keep) if loot else []
     if cfg.only_when_full:
         budget = [k for k in budget if k in (full or set())]
