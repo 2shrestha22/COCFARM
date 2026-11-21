@@ -451,6 +451,34 @@ def _features(image: np.ndarray):
     return keys, descriptors
 
 
+# A village zoomed out measures 0.96-1.0x the one zoomed out at load, and
+# 1.03-1.04x back from a battle (the game zooms in a little): further in
+# than ZOOMED_IN, a zoom-out didn't happen.
+ZOOMED_IN = 1.12
+
+
+def view_scale(reference: np.ndarray, screen: np.ndarray) -> float | None:
+    """How much bigger the map shows on ``screen`` than on ``reference``
+    (2.0: zoomed in twice as close), or ``None`` if they don't overlap
+    enough to tell (another base, a window over the map)."""
+    if reference.shape != screen.shape:
+        return None
+    k1, d1 = _features(reference)
+    k2, d2 = _features(screen)
+    if d1 is None or d2 is None or len(k1) < 2 or len(k2) < 2:
+        return None
+    pairs = cv2.BFMatcher(cv2.NORM_HAMMING).knnMatch(d1, d2, k=2)
+    good = [p[0] for p in pairs if len(p) == 2 and p[0].distance < VIEW_RATIO * p[1].distance]
+    if len(good) < VIEW_AGREE:
+        return None
+    src = np.float32([k1[m.queryIdx].pt for m in good])
+    dst = np.float32([k2[m.trainIdx].pt for m in good])
+    fit, inliers = cv2.estimateAffinePartial2D(src, dst, method=cv2.RANSAC, ransacReprojThreshold=4)
+    if fit is None or inliers is None or int(inliers.sum()) < VIEW_AGREE:
+        return None
+    return float(math.hypot(fit[0, 0], fit[1, 0]))
+
+
 def view_shift(reference: np.ndarray, screen: np.ndarray) -> tuple[int, int] | None:
     """How far the map has moved from ``reference`` to ``screen`` (what was
     at p is now at p + shift), or ``None`` if they don't overlap enough."""
@@ -551,6 +579,9 @@ class Game:
         self.deploy_outline: list = []  # the last battle's whole base edge, every side (see deploy_edges)
         self.last_result = None  # the last battle's stars and damage, off its result screen (see attack.read_result)
         self.pinch_pans = False  # a zoom-out moved the map instead (see _pinch_panned): the game wants a restart
+        # The village all the way out (the bot's, from when the game loaded): a
+        # zoom-out that leaves the village well bigger than it didn't work.
+        self.zoom_reference: np.ndarray | None = None
         self.star_plan: dict = {}  # the last battle fought for stars: its plan and times (see farmbot/starlog.py)
         # This round's parts and what the habits add to them (farmbot/timings.py).
         self.ledger = Ledger(clock)
@@ -928,6 +959,8 @@ class Game:
                     still = True
                     break
                 before = after
+            if still and self._pinch_ignored(after):
+                return True
             if not self.deselect():
                 if still:
                     self._zoomed_view = after
@@ -953,6 +986,24 @@ class Game:
         self.pinch_pans = True
         self._zoomed_view = None
         self.refresh()
+
+    def _pinch_ignored(self, screen: np.ndarray) -> bool:
+        """The pinches changed nothing, yet the village is still well bigger
+        than all the way out (``zoom_reference``): the game took none of the
+        pinch (it thinks a finger is still down; its taps go unanswered too).
+        A view that doesn't change looks just like one already all the way
+        out, and was kept as such: the village stayed zoomed in from then
+        on. Said, and left to the bot's mend (as a pinch that slid)."""
+        if self.zoom_reference is None:
+            return False
+        scale = view_scale(self.zoom_reference, screen)
+        if scale is None or scale < ZOOMED_IN:
+            return False
+        log.warning("Zooming out didn't zoom: the village is still %.2fx its zoomed-out size (the game isn't "
+                    "taking the two-finger pinch)", scale)
+        self.pinch_pans = True
+        self._zoomed_view = None
+        return True
 
     def _still_zoomed_out(self, screen: np.ndarray) -> bool:
         """``screen`` shows the very view the last full zoom-out ended on:

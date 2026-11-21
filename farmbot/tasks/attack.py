@@ -1683,7 +1683,7 @@ def mend_slid_pinch(game: Game) -> bool:
     refocus = getattr(game.device, "refocus_app", None)
     if not game.pinch_pans or refocus is None or not game.package:
         return False
-    log.info("Zooming out moved the view instead: putting the game in the background and back before deploying")
+    log.info("Zooming out isn't working: putting the game in the background and back before deploying")
     try:
         refocus(game.package)
     except Exception as exc:  # noqa: BLE001 (the battle goes on as it is)
@@ -1733,6 +1733,12 @@ def attack(game: Game, cfg: Config, target: Loot | None = None, room: dict[str, 
         # Pinched for real: the view may only look like the last zoom-out's.
         game.zoom_out(force=True)
         edges, center = deploy_edges(game, cfg, war_map)
+        if center is None and getattr(game.device, "refocus_app", None) is not None and game.package:
+            # Still not found: the pinches changed nothing, so the game most
+            # likely isn't taking them (its taps go unanswered then too).
+            game.pinch_pans = True
+            if mend_slid_pinch(game):
+                edges, center = deploy_edges(game, cfg, war_map)
         if center is None:
             log.warning("Deploy points: the base still wasn't found after zooming out (the view may be zoomed "
                         "in); dropping troops on the fixed lines")

@@ -607,7 +607,7 @@ class Bot:
         refocus = getattr(self.game.device, "refocus_app", None)
         if refocus is None:
             return False
-        log.info("Zooming out moved the view instead: putting the game in the background and back")
+        log.info("Zooming out isn't working: putting the game in the background and back")
         self.status("Bringing the game back (zooming out stopped working)")
         try:
             refocus(self.config.device.package)
@@ -644,6 +644,10 @@ class Bot:
             self.game.zoom_out()
             self._left_zoomed_in = False
             self._mend_pinch()  # (the pinch only dragged the map: mended before the job taps it)
+            if self._home_fresh or self.game.zoom_reference is None:
+                # The village all the way out, as the game loaded it: a later
+                # zoom-out leaving it well bigger didn't zoom (see Game._pinch_ignored).
+                self.game.zoom_reference = self.game.refresh().copy()
         if not (RECENTRE and self._centre_due) or self._centred_in_a_row >= RECENTRE_RETIRE:
             return
         self._centre_due = False
