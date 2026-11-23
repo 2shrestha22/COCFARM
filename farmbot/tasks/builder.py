@@ -1454,6 +1454,10 @@ def _finish(game: Game, stages: int) -> BattleResult:
     look_at_result(game)
     game.click(T.BB_RETURN_HOME)
     if game.wait_for(T.BB_BATTLE, timeout=15):
+        if getattr(game, "note_wanted", False):  # a Clan Games challenge's note (it shows a few seconds)
+            from farmbot.tasks import clan_games
+
+            game.games_note = clan_games.catch_note(game)
         _settle_home(game)
     memory(game).on_second = False  # home from a battle: on the first base
     return result

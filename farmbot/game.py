@@ -283,6 +283,21 @@ class T:
     CAPITAL_CARD_DIR = "capital/cards"  # capital/cards/<name>.png: the army editor's units, found in the troop bar too
     CAPITAL_BATTLE_HEAL = "capital/battle_heal"  # the heal spell's card in the raid's troop bar
     CAPITAL_RESULT_MAP = "capital/result_map"  # "Map" under a raid's result
+    # Clan Games (tasks/clan_games.py)
+    CG_ICON = "clan_games/icon"  # the bearded builder among the event buttons, bottom of the village
+    CG_UNFOLD = "clan_games/unfold"  # ">" after the event buttons when they're folded away
+    CG_CHOOSE = "clan_games/choose"  # "Choose" over the caravan while no challenge is going
+    CG_TITLE = "clan_games/title"  # the "Clan Games" sign, top left of the board
+    CG_CHALLENGES_TAB = "clan_games/challenges_tab"  # the board's "Challenges" tab
+    CG_REWARDS_TAB = "clan_games/rewards_tab"  # its "Rewards" tab
+    CG_MEDAL = "clan_games/medal"  # the medal after a challenge's points (in colour: it can be started)
+    CG_GOING = "clan_games/going"  # the stopwatch on the challenge that's going
+    CG_START = "clan_games/start"  # a challenge's "Start" (green; grey while another one goes)
+    CG_TRASH = "clan_games/trash"  # the started challenge's "Trash"
+    CG_TRASH_TITLE = "clan_games/trash_title"  # "Trash Challenge?" (then Okay)
+    CG_CLOSE = "clan_games/close"  # the board's red X
+    CG_NOTE = "clan_games/note"  # "Challenge Progress", on the note after a battle that helped the challenge
+    CG_INFO = "clan_games/info"  # the "i" on a reward that's an item (Rewards tab)
     WAR_BUTTON = "war/button"  # the crossed swords of the war button, left of the home village
     WAR_RETURN_HOME = "war/return_home"  # "Return Home", bottom left of the war map
     WAR_BATTLE_DAY = "war/battle_day"  # "Battle Day" under the war's timer
@@ -781,9 +796,24 @@ class Game:
         for name, region, future in futures:
             self._seen[(name, None, region)] = future.result()
 
+    def find_any_size(self, name: str, sizes: tuple[float, ...], threshold: float | None = None,
+                      region: Rect | None = None) -> list[Match]:
+        """``name`` at a size near one of ``sizes`` (each give or take 0.03),
+        for a window drawn at a size its picture wasn't taken at. Slow (a
+        look per size): only once the window is known to be open. The size
+        found is then the picture's usual one, so the next look is quick."""
+        found = self._find_any_size(self._current(), name, threshold, region, sizes)
+        for m in found[:1]:
+            size = self._any_sizes.get(m.name)
+            if size:
+                self.vision.scales[m.name] = size
+            if self._seen_on is self.screen:  # (the miss on this screenshot, remembered, is now a find)
+                self._seen[(name, threshold, region)] = list(found)
+        return found
+
     def _find_any_size(self, screen: np.ndarray, name: str, threshold: float | None,
-                       region: Rect | None) -> list[Match]:
-        """``name`` at a size near one of ANY_SIZES (the one that last
+                       region: Rect | None, sizes: tuple[float, ...] = ANY_SIZES) -> list[Match]:
+        """``name`` at a size near one of ``sizes`` (the one that last
         matched is tried first, on its own: quick)."""
         threshold = self.vision.default_threshold if threshold is None else threshold
         for tname, image in self.vision.library.get(name):
@@ -792,7 +822,7 @@ class Game:
                 found = match_template(screen, _resized(image, last), threshold, region, tname)
                 if found:
                     return found
-            size, score = best_scale(screen, image, list(ANY_SIZES), region)
+            size, score = best_scale(screen, image, list(sizes), region)
             if score >= threshold:
                 log.debug("%s found at %.2fx its picture's size", tname, size)
                 self._any_sizes[tname] = size

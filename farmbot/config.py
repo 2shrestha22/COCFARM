@@ -474,6 +474,34 @@ class CapitalConfig:
 
 
 @dataclass
+class ClanGamesConfig:
+    """Clan Games (beta): a challenge the farm can do, then the rewards."""
+
+    enabled: bool = False
+    # The score to play up to: "4000" (the bonus reward tier: some stop
+    # there) or "10000" (the most a player can earn).
+    goal: str = "10000"
+    # With no challenge the farm can do on the board, one is started and
+    # trashed for a new one (it costs nothing but 10 minutes).
+    trade_in: bool = True
+    # After a challenge is done, one the farm can't do is traded in before
+    # the next is started (with trading in on), while the board runs low
+    # on ones it can do: it fills up with those otherwise. Each costs the
+    # 10 minutes after a trash.
+    clear_out: bool = True
+    # A challenge going that made no progress in this many of its battles
+    # (no note after them, and none on the board) is trashed for a new one
+    # (with trading in on). "0": never.
+    stuck_after: str = "3"
+    # While a challenge for stars or destroying buildings is going, home
+    # battles aren't ended early over loot (as for the Star Bonus).
+    fight_on: bool = True
+    # Once the games are over, a reward from each tier the clan unlocked:
+    # an item first, then gems, then the first one.
+    rewards: bool = True
+
+
+@dataclass
 class ScheduleConfig:
     """When the bot may play."""
 
@@ -826,6 +854,7 @@ class Config:
     redline: RedLineConfig = field(default_factory=RedLineConfig)
     clan: ClanConfig = field(default_factory=ClanConfig)
     capital: CapitalConfig = field(default_factory=CapitalConfig)
+    clan_games: ClanGamesConfig = field(default_factory=ClanGamesConfig)
     ranked: RankedConfig = field(default_factory=RankedConfig)
     war: WarConfig = field(default_factory=WarConfig)
     schedule: ScheduleConfig = field(default_factory=ScheduleConfig)

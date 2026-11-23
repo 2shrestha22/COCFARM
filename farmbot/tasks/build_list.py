@@ -929,11 +929,27 @@ def price_affordable(screen: np.ndarray, m) -> bool | None:
     return None
 
 
-def green_confirm(game: Game):
+# Sizes the upgrade window's Confirm is looked for at when the window is
+# open but it isn't seen: a display at another density than the pictures'
+# draws the game's windows bigger or smaller than its HUD says.
+CONFIRM_SIZES = (0.8, 0.87, 0.94, 1.08, 1.15, 1.22, 1.29)
+CONFIRM_PICTURE_H = 20  # px tall the Confirm picture is: the green looked at goes by it
+
+
+def green_confirm(game: Game, any_size: bool = False):
     """The upgrade window's Confirm that pays in resources: green. (The grey
-    one next to it spends a Hammer magic item: never pressed.)"""
-    for m in game.find_all(T.UPGRADE_CONFIRM):
-        hsv = _median_hsv(game.screen, m.x - 60, m.y + 20, m.x + 60, m.y + 45)
+    one next to it spends a Hammer magic item: never pressed.) ``any_size``:
+    looked for at CONFIRM_SIZES too (slow: only once the window is open)."""
+    found = game.find_all(T.UPGRADE_CONFIRM)
+    if not found and any_size:
+        found = game.find_any_size(T.UPGRADE_CONFIRM, CONFIRM_SIZES)
+        if found:
+            log.info("Upgrades: the upgrade window's Confirm is drawn at %.2fx its picture's size",
+                     found[0].h / CONFIRM_PICTURE_H)
+    for m in found:
+        k = m.h / CONFIRM_PICTURE_H  # the green under the word, at the button's size
+        hsv = _median_hsv(game.screen, m.x - round(60 * k), m.y + round(20 * k), m.x + round(60 * k),
+                          m.y + round(45 * k))
         if (hsv and GREEN_HUE[0] <= hsv[0] <= GREEN_HUE[1] and hsv[1] >= GREEN_SATURATION
                 and hsv[2] >= GREEN_VALUE):
             return m
@@ -1035,7 +1051,12 @@ def upgrade_row(game: Game, row: Row, lst: BuildList = HOME) -> str:
             else:
                 m = green_confirm(game)
                 confirm = (m.x, m.y) if m else None
-        if locked or confirm is not None or any(m.y > list_y + 40 for m in game.find_all(T.CLOSE)):
+        opened = any(m.y > list_y + 40 for m in game.find_all(T.CLOSE))
+        if opened and confirm is None and not locked and not lst.builder_base:
+            # A window opened with no Confirm seen: it may be drawn at another size.
+            m = green_confirm(game, any_size=True)
+            confirm = (m.x, m.y) if m else None
+        if locked or confirm is not None or opened:
             break  # a window opened (to pay, or saying why not)
     if confirm is not None and asks_for_gems(game, confirm[1]):
         # Some events make upgrades and research cost gems too: never paid.

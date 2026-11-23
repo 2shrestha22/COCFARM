@@ -27,6 +27,8 @@ farmbot.log
 
 # The game's data export of an account's village (its buildings and levels): kept locally
 village.json
+clan_games.json
+*.clan_games.json
 *.village.json
 
 # Which farms are picked on the Farms page: kept locally

@@ -1332,6 +1332,11 @@ def finish_battle(game: Game, cfg: Config, target: Loot | None = None,
         log.warning("Return Home was tapped %d times and still shows (%s)", RETURN_TRIES,
                     game.scores(T.RETURN_HOME))
         _keep_result_screen(game)
+    if getattr(game, "note_wanted", False):
+        # A Clan Games challenge going: the note saying it's completed shows only a few seconds.
+        from farmbot.tasks import clan_games
+
+        game.games_note = clan_games.catch_note(game)
     open_event_chests(game)
     return taken
 

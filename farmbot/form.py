@@ -171,6 +171,13 @@ FIELDS = [
     Field("capital.heal_lead", "float", 0, 3),
     Field("capital.spells_near_drop", "bool"),
     Field("capital.lightning_near_drop", "bool"),
+    Field("clan_games.enabled", "bool"),
+    Field("clan_games.goal", "text"),
+    Field("clan_games.trade_in", "bool"),
+    Field("clan_games.clear_out", "bool"),
+    Field("clan_games.stuck_after", "text"),
+    Field("clan_games.fight_on", "bool"),
+    Field("clan_games.rewards", "bool"),
     Field("clan.request_every_minutes", "int", 1, 600),
     # Schedule
     Field("schedule.enabled", "bool"),
@@ -383,7 +390,8 @@ def plan_summary(values: dict[str, Any]) -> str:
             parts.append(f"attacks bases with {joiner.join(wants)}" if wants else "attacks any base")
         for path, what in (("bot.collect_resources", "collects"), ("walls.enabled", "walls"),
                            ("upgrade.enabled", "upgrades"), ("clan.donate", "donates"),
-                           ("clan.request_troops", "requests troops"), ("capital.raid", "raids")):
+                           ("clan.request_troops", "requests troops"), ("capital.raid", "raids"),
+                           ("clan_games.enabled", "plays the Clan Games")):
             if values.get(path):
                 parts.append(what)
     if values.get("schedule.enabled"):

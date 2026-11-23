@@ -476,22 +476,27 @@ class LevelTile(TogglePushButton):
                 c.setAlphaF(c.alphaF() * 0.45)
         pad = TILE_PAD
         text = self.level_text()
+        font = QFont(self.font())
+        font.setPixelSize(NAME_PX)
+        font.setWeight(QFont.DemiBold if on else QFont.Normal)
+        name_h = QFontMetrics(font).height()
+        # The level and the name under it, as one block in the tile's middle; no level
+        # (no village data yet): the name alone in the middle.
+        top = (self.height() - name_h) // 2
         if text:
             small = QFont(self.font())
             small.setPixelSize(LEVEL_PX)
             small.setWeight(QFont.DemiBold if self.maxed or on else QFont.Normal)
+            level_h = QFontMetrics(small).height()
+            top = (self.height() - level_h - name_h + 2) // 2
             painter.setFont(small)
             width = painter.fontMetrics().horizontalAdvance(text)
             painter.setPen(level_ink)
-            painter.drawText(QRect(self.width() - pad - width, 3, width, 12), Qt.AlignRight | Qt.AlignTop, text)
-        font = QFont(self.font())
-        font.setPixelSize(NAME_PX)
-        font.setWeight(QFont.DemiBold if on else QFont.Normal)
+            painter.drawText(QRect(self.width() - pad - width, top, width, level_h), Qt.AlignRight | Qt.AlignVCenter, text)
+            top += level_h - 2
         painter.setFont(font)
         painter.setPen(name_ink)
-        # (the name on one line, right under the level's)
-        painter.drawText(QRect(pad, 14, self.width() - 2 * pad, self.height() - 18),
-                         Qt.AlignLeft | Qt.AlignVCenter, self.name)
+        painter.drawText(QRect(pad, top, self.width() - 2 * pad, name_h), Qt.AlignLeft | Qt.AlignVCenter, self.name)
         painter.end()
 
 
@@ -828,7 +833,9 @@ class Page(SmoothScrollArea):
         self.setWidget(body)
 
     def add(self, widget: QWidget) -> QWidget:
-        self.layout_.addWidget(widget)
+        # A group of settings keeps its own height: on a page that fits, the room left over
+        # goes under the last group, not into uneven gaps between them.
+        self.layout_.addWidget(widget, 0, Qt.AlignTop if isinstance(widget, SettingCardGroup) else Qt.Alignment())
         return widget
 
     def show_lock(self, text: str, whole: bool = False) -> None:
@@ -3199,7 +3206,8 @@ class FarmbotWindow(FluentWindow):
         return cards[0].fill_now if cards else None
 
     LAZY_PAGES = True  # False: every page built with the window (tests that look through them all)
-    IDLE_BEFORE_PAGES = 1.5  # s without the mouse or keyboard
+    IDLE_BEFORE_PAGES = 3.0  # s without the mouse or keyboard
+    BUILD_BREAK = 1.0  # s between two of them: a click then isn't likely to land while one's being made
 
     def _build_pages_idle(self) -> None:
         """Build the pages not opened yet one at a time, while nobody uses COCFARM."""
@@ -3215,8 +3223,10 @@ class FarmbotWindow(FluentWindow):
         if idle >= self.IDLE_BEFORE_PAGES and hub._build_overlay is None:
             with hub._unseen():
                 self._idle_build()()
-            hub.last_input = time.monotonic() - self.IDLE_BEFORE_PAGES  # the next one after a short break
-            wait = 300
+            # The next one after a short break. Each holds COCFARM up for a quarter of a second,
+            # so back to back (they were 0.3 s apart) a click mostly landed in one: a lag spike.
+            hub.last_input = time.monotonic() - self.IDLE_BEFORE_PAGES
+            wait = int(self.BUILD_BREAK * 1000)
         else:
             wait = int(max(self.IDLE_BEFORE_PAGES - idle, 0) * 1000) + 100
         QTimer.singleShot(min(wait, 60_000), self._build_pages_idle)  # (looked at again within a minute: Qt's int)
@@ -3700,7 +3710,8 @@ class FarmbotWindow(FluentWindow):
                 log.warning("Farm %d's settings can't be read: %s", n, exc)
         return found
 
-    IDLE_BEFORE_PREBUILD = 6.0  # s without the mouse or keyboard
+    IDLE_BEFORE_PREBUILD = 6.0  # s without the mouse or keyboard, COCFARM not the window in front
+    IDLE_BEFORE_PREBUILD_IN_FRONT = 60.0  # s, while it is
 
     def _prebuild(self) -> None:
         """Make the farms' windows one by one while nobody uses COCFARM, so
@@ -3716,13 +3727,16 @@ class FarmbotWindow(FluentWindow):
             return
         self._prebuilding = True
         idle = time.monotonic() - self.last_input
-        if idle >= self.IDLE_BEFORE_PREBUILD:
+        # A second or more each, so while COCFARM is the window in front (someone reading a
+        # page: a click then froze for a second) only after a long while untouched.
+        need = self.IDLE_BEFORE_PREBUILD if QApplication.activeWindow() is None else self.IDLE_BEFORE_PREBUILD_IN_FRONT
+        if idle >= need:
             with self._unseen():
                 self.farm_window(missing[0])
-            self.last_input = time.monotonic() - self.IDLE_BEFORE_PREBUILD  # the next one after a short break
-            wait = 300
+            self.last_input = time.monotonic()  # the next one after as long untouched again
+            wait = int(self.IDLE_BEFORE_PREBUILD * 1000)
         else:
-            wait = int((self.IDLE_BEFORE_PREBUILD - idle) * 1000) + 100
+            wait = min(int((need - idle) * 1000) + 100, 2000)  # (looked at again soon: COCFARM may go behind)
         QTimer.singleShot(wait, self._prebuild_again)
 
     def _prebuild_again(self) -> None:
@@ -5000,19 +5014,33 @@ class FarmbotWindow(FluentWindow):
         card.viewLayout.setSpacing(6)
         card.viewLayout.addWidget(_muted(_wrapping(CaptionLabel(help_text))))
         # The groups' tabs over it all (narrow windows: the chips beside the order still fit).
+        # Too wide for the card (six heroes in a small window), each tab says only its last
+        # word ("King"), and All and None go on a row of their own under the tabs.
         head = QHBoxLayout()
         head.setContentsMargins(0, 6, 0, 0)
         tabs = SegmentedWidget()
         head.addWidget(tabs)
         head.addStretch(1)
+        pair_box = QWidget()
+        pair_row = QHBoxLayout(pair_box)
+        pair_row.setContentsMargins(0, 0, 0, 0)
         pair = []
         for label in ("All", "None"):
             b = TransparentPushButton(label)
             b.setFixedHeight(28)
             b.setToolTip(f"{label} of this group")
-            head.addWidget(b)
+            pair_row.addWidget(b)
             pair.append(b)
+        head.addWidget(pair_box)
         card.viewLayout.addLayout(head)
+        under = QHBoxLayout()  # (All and None, when they don't fit beside the tabs)
+        under.setContentsMargins(0, 0, 0, 0)
+        under.addStretch(1)
+        card.viewLayout.addLayout(under)
+        short = {h: h.split()[-1] for h in groups}
+        if len(set(short.values())) < len(short):  # (two would read the same)
+            short = {h: h for h in groups}
+        narrow = {"tabs": False, "pair": False}
         columns = QHBoxLayout()
         columns.setContentsMargins(0, 4, 0, 0)
         columns.setSpacing(20)
@@ -5112,17 +5140,55 @@ class FarmbotWindow(FluentWindow):
             show_group(shown["group"] if shown["group"] in open_ or not open_ else open_[0])
             for flow in flows.values():
                 flow.invalidate()
+            counted()  # (fewer tabs shown may fit at full length)
 
         picks.show_only = show_only
         card.fill = make_chips
         self.fill_later.append(card)
 
-        def counted() -> None:
+        def labelled() -> None:
             chosen = set(picks.names())
             for heading, names in groups.items():
                 n = len(chosen.intersection(names))
-                tabs.items[heading].setText(f"{heading} ({n})" if n else heading)
+                label = short[heading] if narrow["tabs"] else heading
+                tabs.items[heading].setText(f"{label} ({n})" if n else label)
+                tabs.items[heading].setToolTip(heading if label != heading else "")
 
+        def counted() -> None:
+            """The tabs' labels (each saying how many are picked in it), as
+            short as the card's width needs, and All and None beside them or under."""
+            margins = card.viewLayout.contentsMargins()
+            room = card.width() - margins.left() - margins.right()
+            if room <= 0:
+                labelled()
+                return
+            # One step as the window narrows: the tabs shorten while All and None stay beside
+            # them; only if even short tabs don't leave room do All and None go under them.
+            beside = 12 + pair_box.sizeHint().width()
+            for want in (False, True):
+                narrow["tabs"] = want
+                labelled()
+                if tabs.sizeHint().width() + beside <= room:
+                    break
+            wrap = tabs.sizeHint().width() + beside > room
+            if wrap != narrow["pair"]:
+                narrow["pair"] = wrap
+                (under if wrap else head).addWidget(pair_box)
+                fit()
+
+        last_width = {"w": -1}
+
+        def resized_card() -> None:
+            """A new width: the labels for it, then the card's height once the chips have
+            rewrapped (narrower, they take more rows: the last ones were cut off). Not on
+            its height: that changes every frame as it opens and closes."""
+            if card.width() == last_width["w"]:
+                return
+            last_width["w"] = card.width()
+            counted()
+            QTimer.singleShot(0, fit)
+
+        _on_resize(card, resized_card)
         for heading in groups:
             tabs.addItem(heading, heading, lambda _=False, h=heading: show_group(h))  # (the click passes True first)  # (the click passes True first)
         tabs.setCurrentItem(shown["group"])
@@ -5290,6 +5356,37 @@ class FarmbotWindow(FluentWindow):
                     "request is free. What's removed is gone: attacks may go without Clan Castle troops.")
         self.depends("clan.request_troops", "clan.request_every_minutes", "clan.empty_castle")
         self._note(page, self._template_note("Donating", "Requesting troops", "Emptying the Clan Castle"))
+
+        games = page.add(badged(SettingCardGroup("Clan Games")))
+        self.switch(games, "clan_games.enabled", Glyph.TROPHY, "Play the Clan Games",
+                    "While the Clan Games run, opens the challenge board between rounds and starts the best "
+                    "challenge the bot can play: stars, loot, Builder Base wins, destroying buildings, or using a "
+                    "troop or spell that's in your army. Normal rounds then play it. Challenges it can't do "
+                    "(donations, wars, raids, gems...) are skipped. Stops at your score goal.")
+        self.segments(games, "clan_games.goal", FIF.FLAG, "Play up to",
+                      "The score to stop at. 4,000 is the tier with the bonus reward, where many players stop; "
+                      "10,000 is the most a player can earn.", {"4000": "4,000", "10000": "10,000"}, width=80)
+        self.switch(games, "clan_games.trade_in", FIF.SYNC, "Trade in a challenge it can't do",
+                    "If no challenge on the board can be played, starts the lowest one and trashes it (free, but "
+                    "no challenge can start for 10 minutes) so a new one comes in.")
+        self.switch(games, "clan_games.clear_out", FIF.DELETE, "Clear out challenges it can't do",
+                    "When a challenge is done and the board runs low on ones the bot can do, one it can't do is "
+                    "traded in before the next starts, so "
+                    "the board doesn't fill up with them (a new one comes in its place; nothing can start for 10 "
+                    "minutes after). Needs \"Trade in\" on.")
+        self.segments(games, "clan_games.stuck_after", FIF.HISTORY, "Trash a stuck challenge after",
+                      "A challenge that made no progress in this many of its battles is trashed so a new one comes "
+                      "in (nothing can start for 10 minutes after). Needs \"Trade in\" on.",
+                      {"0": "Never", "3": "3 battles", "5": "5 battles"}, width=90)
+        self.switch(games, "clan_games.fight_on", Glyph.SWORDS, "Fight on for the challenge",
+                    "While a challenge for stars or for destroying buildings is going (or one using a unit), "
+                    "home battles are fought to the end like the Star Bonus's: not left early once the loot "
+                    "is in or the storages are full. Battles take longer, and loot comes slower meanwhile.")
+        self.switch(games, "clan_games.rewards", FIF.CERTIFICATE, "Pick the rewards",
+                    "Once the games end, picks a reward in each tier you reached: magic items first, then gems, "
+                    "then the rest. New: check the picks in the game.")
+        self.depends("clan_games.enabled", "clan_games.goal", "clan_games.trade_in", "clan_games.clear_out", "clan_games.stuck_after", "clan_games.fight_on", "clan_games.rewards")
+        self._note(page, self._template_note(catalog.CLAN_GAMES))
 
     def _wars_tab(self, page: Page) -> None:
         war = page.add(badged(SettingCardGroup("Clan wars")))

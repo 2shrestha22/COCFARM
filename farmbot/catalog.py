@@ -41,6 +41,7 @@ WARDEN_SIDE = "Putting the Grand Warden with the most troops"
 HERO_WALK = "Queen and Champion walks"
 SUPER_TROOPS = "Activating super troops"
 CAPITAL = "Clan Capital raids"
+CLAN_GAMES = "Clan Games"
 STAR_PLANS = "War and ranked attacks planned by army and base"
 WAR = "Clan war attacks"
 APPRENTICE = "Putting the Builder's Apprentice to work"
@@ -343,6 +344,30 @@ PICTURES: list[Picture] = [
             "(the count changes).",
             CAPITAL),
     Picture(T.CAPITAL_RESULT_MAP, "Raid result: Map", "Raid result screen: the word \"Map\".", CAPITAL),
+    Picture(T.CG_ICON, "Clan Games button", "Home village, bottom: the bearded builder among the event buttons.",
+            CLAN_GAMES),
+    Picture(T.CG_UNFOLD, "Unfold event buttons", "Home village, bottom (event buttons folded): the \">\" after "
+            "them.", CLAN_GAMES),
+    Picture(T.CG_CHOOSE, "Clan Games: Choose", "Home village, top left, over the Clan Games caravan while no "
+            "challenge is going: the word \"Choose\".", CLAN_GAMES),
+    Picture(T.CG_TITLE, "Clan Games sign", "Clan Games board, top left: the words \"Clan Games\".", CLAN_GAMES),
+    Picture(T.CG_CHALLENGES_TAB, "Challenges tab", "Clan Games board, top: the word \"Challenges\".", CLAN_GAMES),
+    Picture(T.CG_REWARDS_TAB, "Rewards tab", "Clan Games board, top: the word \"Rewards\" (the tab not picked).",
+            CLAN_GAMES),
+    Picture(T.CG_MEDAL, "Challenge medal", "Clan Games board: the silver medal after a challenge's points, in "
+            "colour.", CLAN_GAMES),
+    Picture(T.CG_GOING, "Challenge going", "Clan Games board, with a challenge going: the stopwatch at the top left "
+            "of its tile.", CLAN_GAMES),
+    Picture(T.CG_NOTE, "Challenge Progress note", "Home village, bottom right, for a few seconds after a battle "
+            "that helped the challenge going: the words \"Challenge Progress\".", CLAN_GAMES),
+    Picture(T.CG_START, "Challenge Start", "Clan Games board → a challenge: the word \"Start\" on the green "
+            "button.", CLAN_GAMES),
+    Picture(T.CG_TRASH, "Challenge Trash", "Clan Games board → the challenge going: \"Trash\" and the dynamite "
+            "on the red button.", CLAN_GAMES),
+    Picture(T.CG_TRASH_TITLE, "Trash Challenge?", "After Trash: the title \"Trash Challenge?\".", CLAN_GAMES),
+    Picture(T.CG_CLOSE, "Clan Games close", "Clan Games board, top right: the red X.", CLAN_GAMES),
+    Picture(T.CG_INFO, "Reward item", "Clan Games board, Rewards tab: the \"i\" on an item's reward; add one in "
+            "colour and one greyed.", CLAN_GAMES, folder=True),
     Picture(T.WAR_BUTTON, "War button", "Home village, left edge, during a war: the middle of the crossed swords "
             "(not the red badge or the timer).", WAR),
     Picture(T.WAR_RETURN_HOME, "War: Return Home", "War map, bottom left: the words \"Return Home\".", WAR),
