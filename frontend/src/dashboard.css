@@ -1,0 +1,235 @@
+@import "tailwindcss";
+
+@layer base {
+  html {
+    color-scheme: light;
+  }
+
+  html.dark {
+    color-scheme: dark;
+  }
+}
+
+.session-heading {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 14px;
+}
+
+.session-icon {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 10px;
+  background: var(--session-tint);
+  color: var(--session-accent);
+  font-size: 20px;
+}
+
+.session-label {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.session-state {
+  color: var(--session-accent);
+  font-size: 24px;
+  font-weight: 650;
+  line-height: 1.25;
+}
+
+.session-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, auto));
+  gap: 16px;
+  padding: 6px 0 6px 16px;
+  border-inline-start: 1px solid var(--session-divider);
+}
+
+.session-details,
+.session-settings {
+  margin-block-start: 16px;
+  padding-block-start: 16px;
+  border-block-start: 1px solid var(--session-divider);
+}
+
+.session-details {
+  display: grid;
+  gap: 16px;
+}
+
+.session-metrics > div {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--session-surface);
+}
+
+.session-readings > summary {
+  width: fit-content;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.session-readings table {
+  width: 100%;
+  table-layout: fixed;
+  font-size: 13px;
+}
+
+.session-readings :is(th, td) {
+  padding: 6px 8px;
+  border-block-end: 1px solid var(--session-divider);
+  overflow-wrap: anywhere;
+  text-align: start;
+}
+
+.session-readings :is(th, td):not(:first-child) {
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+}
+
+.activity-log {
+  container-type: inline-size;
+}
+
+.activity-log-toggle {
+  display: flex;
+  width: 100%;
+  min-height: 44px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  border-radius: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  text-align: start;
+  cursor: pointer;
+}
+
+.activity-log h2 {
+  border-radius: inherit;
+}
+
+.activity-log .ant-card-body {
+  border-radius: inherit;
+}
+
+.activity-log-toggle:hover {
+  background: var(--log-hover);
+}
+
+.activity-log-toggle:focus-visible {
+  outline: 2px solid var(--log-focus);
+  outline-offset: -3px;
+}
+
+.activity-log-toggle[aria-expanded="true"] .anticon {
+  transform: rotate(180deg);
+}
+
+.activity-viewport,
+.activity-empty {
+  border: 1px solid var(--log-border);
+  border-radius: 8px;
+  background: var(--log-surface);
+}
+
+.activity-viewport {
+  max-height: 18rem;
+  overflow: auto;
+}
+
+.activity-viewport:focus-visible {
+  outline: 2px solid var(--log-focus);
+  outline-offset: 2px;
+}
+
+.activity-entry {
+  display: grid;
+  grid-template-columns: 4.5rem 4.25rem minmax(0, 1fr);
+  column-gap: 10px;
+  align-items: baseline;
+  padding: 8px 12px;
+  font-size: 13px;
+}
+
+.activity-entry + .activity-entry {
+  border-block-start: 1px solid var(--log-border);
+}
+
+.activity-time,
+.activity-level {
+  color: var(--log-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.activity-level {
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.activity-level[data-level="INFO"] {
+  color: var(--log-info);
+}
+
+.activity-level[data-level="WARNING"] {
+  color: var(--log-warning);
+}
+
+.activity-level:is([data-level="ERROR"], [data-level="CRITICAL"]) {
+  color: var(--log-error);
+}
+
+.activity-message,
+.activity-entry-plain {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.activity-entry-plain {
+  display: block;
+}
+
+.activity-empty {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+}
+
+.activity-empty > .anticon {
+  color: var(--log-muted);
+  font-size: 20px;
+}
+
+@container field-group (max-width: 410px) {
+  .session-heading {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .session-meta {
+    grid-column: 2;
+    padding: 0;
+    border-inline-start: 0;
+  }
+}
+
+@container (max-width: 430px) {
+  .activity-entry {
+    grid-template-columns: max-content minmax(0, 1fr);
+    row-gap: 2px;
+  }
+
+  .activity-message {
+    grid-column: 1 / -1;
+  }
+}
+
+@container dashboard (min-width: 48rem) {
+  .activity-viewport {
+    max-height: clamp(18rem, 58vh, 32rem);
+  }
+}

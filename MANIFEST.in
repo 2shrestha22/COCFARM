@@ -1,0 +1,3 @@
+graft frontend/src
+graft frontend/licenses
+include frontend/build.mjs frontend/package.json frontend/package-lock.json

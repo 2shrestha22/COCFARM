@@ -12,6 +12,7 @@ from dataclasses import asdict
 from datetime import date, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from secrets import token_urlsafe
 from urllib.parse import parse_qs, urlsplit
 
 from farmbot import bluestacks, catalog, display, gamecheck, history, instances
@@ -26,7 +27,7 @@ from farmbot.runner import run_farm
 from farmbot.tasks.search import Loot
 from farmbot.timings import Timings, cost, duration
 from farmbot.vision import TemplateLibrary, Vision
-from farmbot.web_settings import apply, schema, values_for
+from farmbot.web_settings import apply, schema, values_for, village_controls
 
 log = logging.getLogger(__name__)
 ASSETS = Path(__file__).with_name("assets")
@@ -70,6 +71,7 @@ class Dashboard:
         self.closed = False
         self.checking = False
         self.message = "Ready"
+        self.mode: str | None = None
         self.resources: Loot | None = None
         self.attacks = 0
         self.bases = 0
@@ -87,9 +89,10 @@ class Dashboard:
 
     def _settings(self, config: Config) -> dict:
         values = values_for(config)
-        plan = plan_summary(validate(values)[0]).replace(" (F5)", "")
+        plan = plan_summary(validate(values)[0]).removesuffix(" Press Start (F5).")
+        profile = config.profiles.active
         return {"values": values, "plan": plan, "file": self.path.name, "serial": self.serial,
-                "active": config.profiles.active, "profiles": self.profiles.names()}
+                "active": profile, "profiles": self.profiles.names(), **village_controls(self.path, self.profiles, profile)}
 
     def save_settings(self, values: dict, profile: str) -> dict:
         with self.lock:
@@ -118,6 +121,7 @@ class Dashboard:
                 "pause_requested": self.pause.is_set(),
                 "failed": self.failed,
                 "message": self.message,
+                "mode": self.mode,
                 "attacks": self.attacks,
                 "bases": self.bases,
                 "scout": self.scout,
@@ -143,6 +147,7 @@ class Dashboard:
                 self.stop.clear()
                 self.pause.clear()
                 self.failed = False
+                self.mode = config.bot.mode
                 self.resources = None
                 self.attacks = 0
                 self.bases = 0
@@ -308,11 +313,17 @@ def request_handler(dashboard: Dashboard) -> type[BaseHTTPRequestHandler]:
             pass
 
         def _send(self, body: bytes, content_type: str, status: int = 200) -> None:
+            policy = "default-src 'self'; frame-ancestors 'none'"
+            if content_type.startswith("text/html"):
+                # Ant Design attaches this nonce to its generated theme styles.
+                nonce = token_urlsafe(24)
+                body = body.replace(b"__DASHBOARD_STYLE_NONCE__", nonce.encode("ascii"))
+                policy += f"; style-src 'self' 'nonce-{nonce}'"
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'")
+            self.send_header("Content-Security-Policy", policy)
             self.end_headers()
             self.wfile.write(body)
 

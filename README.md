@@ -222,10 +222,13 @@ farmbot pictures    # list the button pictures and which are missing
 
 The web dashboard controls a farm started from the dashboard. Its sidebar and
 tabs follow the desktop app. Use **Farms** to select an existing account
-profile. It uses the same `farmbot.toml` as the CLI,
-and settings saved during a run take effect on the next start. Run `farmbot web`
+profile. It uses the same `farmbot.toml` as the CLI and saves edits automatically.
+Changes during a run take effect on the next start. Run `farmbot web`
 and open the URL printed in your terminal. Press Ctrl+C to stop the dashboard
 and its farm.
+
+After editing the dashboard source in `frontend/`, rebuild the bundled web
+assets with `npm --prefix frontend ci` and `npm --prefix frontend run build`.
 
 **Releases:** every push and pull request makes the
 [`windows-exe`](.github/workflows/windows-exe.yml) workflow build

@@ -38,6 +38,11 @@ None of them has been modified.
   for the libraries OpenCV includes, are in `licenses/opencv-python` in the
   download.
 
+## Web dashboard
+
+The web dashboard bundles Ant Design, Ant Design Icons, React, Tailwind CSS, and Recharts.
+[Bundled license texts](farmbot/assets/dashboard.LICENSE.txt) · [Ant Design source](https://github.com/ant-design/ant-design).
+
 ## Also included
 
 - **Python**: Python Software Foundation License. <https://docs.python.org/3/license.html>

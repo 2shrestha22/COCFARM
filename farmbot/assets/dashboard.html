@@ -6,92 +6,10 @@
   <title>COCFARM</title>
   <link rel="icon" href="/cocfarm.png">
   <link rel="stylesheet" href="/dashboard.css">
-  <script src="/dashboard.js" defer></script>
+  <script type="module" src="/dashboard.js" nonce="__DASHBOARD_STYLE_NONCE__"></script>
 </head>
 <body>
-  <header class="title-bar">
-    <div class="brand"><img src="/cocfarm.png" alt="" width="30" height="30"><span>COCFARM</span></div>
-    <div class="title-state"><span class="state-pill" id="title-state">Ready</span><span id="title-message">Connecting…</span></div>
-    <div class="controls" aria-label="Farm controls">
-      <button id="start" class="primary" disabled>Start</button>
-      <button id="stop" class="primary" hidden disabled>Stop</button>
-      <button id="pause" disabled>Pause</button>
-    </div>
-  </header>
-  <div class="window">
-    <aside class="sidebar" aria-label="Navigation">
-      <button class="menu-button" id="menu" aria-label="Toggle navigation" aria-expanded="true">☰</button>
-      <nav id="main-navigation" aria-label="Main pages"></nav>
-      <nav id="secondary-navigation" aria-label="Advanced and account pages"></nav>
-    </aside>
-    <main id="content">
-      <header class="page-heading">
-        <div><h1 id="page-title">Dashboard</h1><p id="page-subtitle" class="subtitle">What COCFARM is doing right now, and what it has earned.</p></div>
-        <div class="page-actions"><button id="save" class="primary" disabled hidden>Save settings</button></div>
-      </header>
-      <nav class="tabs" id="tabs" aria-label="Page tabs" hidden></nav>
-      <p id="tab-intro" class="subtitle" hidden></p>
-      <p id="settings-result" class="notice" role="status" hidden></p>
-      <p id="action-error" class="notice error" role="alert" hidden></p>
-
-      <div id="dashboard-status">
-        <section class="status-card card" aria-label="Farm status" aria-live="polite">
-          <span class="state-pill large" id="state-pill">Ready</span>
-          <div><h2 id="status">Ready to farm</h2><p id="run-detail" class="subtitle"></p></div>
-          <div class="controls dashboard-controls">
-            <button id="card-action" class="primary" disabled>Start</button>
-            <button id="card-pause" hidden disabled>Pause</button>
-          </div>
-        </section>
-      </div>
-
-      <fieldset id="settings-fields" aria-label="Farm settings" disabled></fieldset>
-
-      <div id="dashboard-panels">
-        <div id="home-panels">
-          <section class="panel" aria-labelledby="scout-heading">
-            <div class="panel-header"><h2 id="scout-heading">Base being scouted</h2><span id="scout-verdict" class="badge">Waiting for a base</span></div>
-            <dl class="scout-metrics">
-              <div class="gold"><dt>Gold</dt><dd id="scout-gold">—</dd></div>
-              <div class="elixir"><dt>Elixir</dt><dd id="scout-elixir">—</dd></div>
-              <div class="dark"><dt>Dark elixir</dt><dd id="scout-dark">—</dd></div>
-            </dl>
-          </section>
-          <section class="panel" aria-labelledby="session-heading">
-            <div class="panel-header"><h2 id="session-heading">This session</h2><p id="village-resources" class="subtitle"></p></div>
-            <dl class="session-metrics">
-              <div><dt>Bases seen</dt><dd id="bases">0</dd></div>
-              <div><dt>Attacks</dt><dd id="attacks">0</dd></div>
-              <div><dt>Running for</dt><dd id="runtime">—</dd></div>
-              <div class="gold"><dt>Gold gained</dt><dd id="gained-gold">0</dd></div>
-              <div class="elixir"><dt>Elixir gained</dt><dd id="gained-elixir">0</dd></div>
-              <div class="dark"><dt>Dark gained</dt><dd id="gained-dark">0</dd></div>
-            </dl>
-            <div class="last-attack"><span>Last attack</span><strong id="last-attack">None yet</strong></div>
-          </section>
-        </div>
-        <section id="builder-panel" class="builder-panel" aria-labelledby="builder-heading" hidden>
-          <div class="panel-header"><h2 id="builder-heading">Builder battle</h2><span id="builder-stage" class="badge">Waiting</span></div>
-          <dl class="builder-metrics">
-            <div class="panel gold"><dt>Builder gold</dt><dd id="builder-gold">0</dd></div>
-            <div class="panel elixir"><dt>Builder elixir</dt><dd id="builder-elixir">0</dd></div>
-            <div class="panel"><dt>Battles</dt><dd id="builder-battles">0</dd></div>
-            <div class="panel"><dt>Running for</dt><dd id="builder-runtime">—</dd></div>
-            <div class="panel builder-last"><dt>Last battle</dt><dd id="builder-last">None yet</dd></div>
-            <div class="panel"><dt>Elixir cart</dt><dd id="builder-cart">—</dd></div>
-            <div class="panel"><dt>Walls upgraded</dt><dd id="builder-walls">0</dd></div>
-          </dl>
-        </section>
-        <section class="activity" aria-labelledby="activity-heading">
-          <div class="panel-header"><h2 id="activity-heading">Step-by-step log</h2><div class="controls">
-            <button id="show-log" aria-controls="logs" aria-expanded="false">Show the step-by-step log</button>
-            <button id="clear-log" hidden>Clear</button>
-          </div></div>
-          <pre id="logs" tabindex="0" aria-label="Farm activity log" hidden>Nothing yet. Press Start and each step will appear here.</pre>
-        </section>
-      </div>
-      <section id="page-content" aria-label="Page details" hidden></section>
-    </main>
-  </div>
+  <div id="app"></div>
+  <noscript>Enable JavaScript to use the COCFARM dashboard.</noscript>
 </body>
 </html>
