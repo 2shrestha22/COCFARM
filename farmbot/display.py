@@ -62,22 +62,20 @@ def check(device, fix: bool) -> list[str]:
     want_size = f"{standard.WIDTH}x{standard.HEIGHT}"
 
     physical, override = _values(size_out)
-    if _size(physical) is not None:
-        if override and _size(override) != _size(physical):
-            if fix and _size(physical) == WANTED_SIZE:
-                shell("wm", "size", "reset")
-                found.append(f"display size overridden to {override}: reset to {physical}")
-            elif fix:
-                shell("wm", "size", want_size)
-                found.append(f"display size {override} (its own {physical}): set to {want_size}")
-            else:
-                found.append(f"display size overridden to {override} (its own {physical})")
-        elif _size(override or physical) != WANTED_SIZE:
-            if fix:
-                shell("wm", "size", want_size)
-                found.append(f"display size {physical}: set to {want_size}")
-            else:
-                found.append(f"display size {physical}, not {want_size}")
+    physical_size = _size(physical)
+    if physical_size is not None and _size(override or physical) != WANTED_SIZE:
+        if override and _size(override) != physical_size:
+            detail = f"display size overridden to {override} (its own {physical})"
+        else:
+            detail = f"display size {physical}"
+        if fix and physical_size == WANTED_SIZE:
+            shell("wm", "size", "reset")
+            found.append(f"{detail}: reset to {physical}")
+        elif fix:
+            shell("wm", "size", want_size)
+            found.append(f"{detail}: set to {want_size}")
+        else:
+            found.append(f"{detail}, expected {want_size}")
 
     physical, override = _values(density_out)
     if _density(physical) is not None:

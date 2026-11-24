@@ -64,6 +64,22 @@ looks after your village, in **both the home village and the builder base**.
 **Restart and update** once it's downloaded. Your settings, history and pictures are kept.
 You can also check by hand under **Advanced → App → Updates**.
 
+### Connect an Android device over USB
+
+1. Install [Android SDK Platform-Tools](https://developer.android.com/tools/releases/platform-tools)
+   on the PC running COCFARM.
+2. Enable USB debugging on the Android device, connect it by USB, and accept the debugging prompt.
+   [Android USB setup](https://developer.android.com/studio/run/device)
+3. In COCFARM, go to **Advanced → Emulator** and select **Other**. Leave **ADB serial or address**
+   blank to use the sole device listed by ADB. If several devices are listed, run `adb devices` and
+   enter the serial for the device you want. If `adb` is outside your PATH, set **ADB program** under
+   **ADB and sound** to the full path to `adb.exe`.
+4. Open Clash of Clans on the device and click **Check now** under **Check the connection**.
+
+From the command line, `farmbot run` uses the connected device when **Other** is selected and
+the serial is blank. This is the default on macOS and Linux when the config omits the device mode
+and serial. Use `farmbot --serial YOUR_SERIAL run` to choose a specific device.
+
 ### Tested emulators
 
 Home village and builder base attacks were tested live on each of these (COCFARM 0.6.0):

@@ -344,10 +344,10 @@ class OnboardingDialog(BelowTitleBar, MessageBoxBase):
             self.download_buttons[key] = button
             inner.addLayout(_row(*words, status, button, stretch_at=len(words)))
         column.addWidget(card)
-        column.addWidget(tint(_wrap(CaptionLabel("Other emulators may work too: pick Other below and give its "
-                                                 "ADB address.")), MUTED))
+        column.addWidget(tint(_wrap(CaptionLabel("Pick Other to use an Android device over USB or enter an "
+                                                 "emulator's ADB address.")), MUTED))
 
-        # Which one, and which of its instances (or, for Other, its address).
+        # Which one and which instance, serial or address.
         column.addSpacing(4)
         card, inner = _card(10)
         self.mode_picker = SegmentedWidget()
@@ -365,11 +365,12 @@ class OnboardingDialog(BelowTitleBar, MessageBoxBase):
 
         self.serial_box = LineEdit()
         self.serial_box.setFixedWidth(300)
-        self.serial_box.setPlaceholderText("127.0.0.1:5555")
-        self.serial_box.textChanged.connect(lambda text: text.strip() and self._set("device.serial", text.strip()))
+        self.serial_box.setPlaceholderText("Automatic for one connected device")
+        self.serial_box.textChanged.connect(lambda text: self._set("device.serial", text.strip()))
         self.serial_row = self._setting(
-            inner, FIF.CONNECT, "ADB address",
-            tint(_wrap(CaptionLabel("In the emulator's settings, often under ADB or Developer options.")), MUTED),
+            inner, FIF.CONNECT, "ADB serial or address",
+            tint(_wrap(CaptionLabel("Leave blank for one connected device. To choose one, enter the serial from "
+                                    "adb devices or a TCP host and port.")), MUTED),
             self.serial_box)
         self.adb_box = LineEdit()
         self.adb_box.setFixedWidth(300)
@@ -377,7 +378,8 @@ class OnboardingDialog(BelowTitleBar, MessageBoxBase):
         self.adb_box.textChanged.connect(lambda text: self._set("device.adb_path", text.strip() or "adb"))
         self.adb_row = self._setting(
             inner, FIF.COMMAND_PROMPT, "ADB program",
-            tint(_wrap(CaptionLabel('"adb", or the full path to the emulator\'s adb.exe.')), MUTED), self.adb_box)
+            tint(_wrap(CaptionLabel('For USB, use "adb" from Android Platform-Tools on PATH or enter the full '
+                                    'path to adb.exe.')), MUTED), self.adb_box)
 
         column.addWidget(card)
 
@@ -588,7 +590,7 @@ class OnboardingDialog(BelowTitleBar, MessageBoxBase):
     def _show_instances(self) -> None:
         window = self.window_
         mode = window._value("device.mode")
-        other = mode == "manual"  # any emulator, by its ADB address: no instances, and not started by COCFARM
+        other = mode == "manual"
         self.instance_row.setVisible(not other)
         for widget in (self.serial_row, self.adb_row):
             widget.setVisible(other)

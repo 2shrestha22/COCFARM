@@ -2230,7 +2230,10 @@ class Bot:
         self.game.ledger.begin("home", "search")
         self.status("Searching for a base")
         boosts = cfg.attack.super_troops and not self._not_yet("super_troops", "super troop boosts")
-        boosted = search.start_search(self.game, boosts, before.dark if before else None)
+        serial = getattr(self.game.device, "serial", cfg.device.serial).strip()
+        direct_device = cfg.device.mode == "manual" and ":" not in serial and not serial.startswith("emulator-")
+        boosted = search.start_search(self.game, boosts, before.dark if before else None,
+                                      direct_device=direct_device)
         self.session["super troops"] += boosted
         if boosted and before is not None:
             # What the boosts cost isn't the battle's: it's counted from after them.

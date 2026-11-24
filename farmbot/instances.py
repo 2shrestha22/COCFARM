@@ -318,6 +318,7 @@ def port_clash(device: DeviceConfig, others: dict[int, DeviceConfig], found: lis
 # The farms playing now, each with its emulator instance: COCFARM never
 # closes an emulator another farm plays (to free a port, say).
 active: dict[int, DeviceConfig] = {}
+_active_lock = threading.Lock()
 # The farms among them connected to their emulator (past starting it).
 connected: set[int] = set()
 # The account each farm's game is in (its profile, as read in the game).
@@ -382,6 +383,17 @@ def same_instance(a: DeviceConfig, b: DeviceConfig) -> bool:
     if a.mode == "ldplayer" and a.ldplayer and b.ldplayer and a.ldplayer != b.ldplayer:
         return False  # LDPlayer 9's instance 0 and LDPlayer 14's are different ("": the newest found)
     return key_of(a) == key_of(b)
+
+
+def register_active(farm: int, cfg: DeviceConfig) -> int | None:
+    """Track a running farm, or return the farm already using its manual device."""
+    with _active_lock:
+        if cfg.mode == "manual":
+            existing = next((n for n, other in list(active.items()) if n != farm and same_instance(cfg, other)), None)
+            if existing is not None:
+                return existing
+        active[farm] = cfg
+    return None
 
 
 def set_key(cfg: DeviceConfig, key: str) -> None:

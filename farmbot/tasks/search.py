@@ -372,7 +372,8 @@ def full_by_amount(loot: Loot, maxes: dict[str, int]) -> set[str]:
     return {k for k, most in maxes.items() if getattr(loot, k) >= most * FULL_AMOUNT}
 
 
-def start_search(game: Game, super_troops: bool = False, dark: int | None = None) -> int:
+def start_search(game: Game, super_troops: bool = False, dark: int | None = None, *,
+                 direct_device: bool = False) -> int:
     """Home village → Battle → Find a Match → Attack! (army screen).
     ``super_troops``: on the army screen, boost the super troops showing
     Activate first, with ``dark``, the dark elixir you have. Returns how
@@ -389,7 +390,17 @@ def start_search(game: Game, super_troops: bool = False, dark: int | None = None
 
         if clear_popups(game, rounds=2):
             log.info("A window opened instead of the battle menu: closed it")
-        if not (game.find(T.FIND_MATCH) or game.click(T.BATTLE)) or not _find_a_match(game, timeout=5):
+        if not game.find(T.FIND_MATCH):
+            battle = game.find(T.BATTLE) if direct_device else None
+            if battle is not None and battle.w >= 3 * battle.h:
+                # The bundled pictures match the label near the bottom edge.
+                # Retry inside the button, away from the phone's navigation area.
+                y = battle.y - 2 * battle.h
+                log.debug("retry %s at (%d, %d) after the menu didn't open", T.BATTLE, battle.x, y)
+                game.tap(battle.x, y)
+            elif not game.click(T.BATTLE):
+                raise SearchError("find-a-match button did not appear")
+        if not _find_a_match(game, timeout=5):
             raise SearchError("find-a-match button did not appear")
     # Newer versions confirm the army first; older ones go straight to scouting.
     boosted = 0

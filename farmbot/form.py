@@ -361,8 +361,6 @@ def apply_form(config: Config, form: dict[str, Any]) -> None:
         path, message = next(iter(errors.items()))
         raise ValueError(f"{path}: {message}")
     for path, value in values.items():
-        if path == "device.serial" and not value:
-            continue
         _set(config, path, value)
     config.validate()
 

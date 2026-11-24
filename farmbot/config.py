@@ -8,6 +8,7 @@ so the same settings fit phones and 16:9 emulators alike.
 
 from __future__ import annotations
 
+import sys
 import tomllib
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
@@ -25,8 +26,8 @@ class DeviceConfig:
     # "bluestacks": find BlueStacks 5 and its ADB port automatically.
     # "ldplayer": find LDPlayer 9+ and its instance automatically.
     # "mumu": find MuMu Player 12+ and its instance automatically.
-    # "manual": connect to ``serial`` (any emulator or phone).
-    mode: str = "bluestacks"
+    # "manual": connect to ``serial`` or use the sole device listed by ADB.
+    mode: str = "bluestacks" if sys.platform == "win32" else "manual"
     ldplayer: str = ""  # install folder or name ("LDPlayer 9"); empty = the newest found
     ldplayer_index: int = 0  # which LDPlayer instance
     mumu_index: int = 0  # which MuMu Player instance
@@ -42,8 +43,8 @@ class DeviceConfig:
     mute: bool = True
     # The display, CPU cores, memory, frame rate and phone model aren't
     # settings: every emulator is set to farmbot.standard when it connects.
-    serial: str = "127.0.0.1:5555"
-    adb_path: str = "adb"  # "adb" = BlueStacks' own HD-Adb.exe when available
+    serial: str = ""
+    adb_path: str = "adb"  # for USB, use Android Platform-Tools on PATH or set its full path
     package: str = "com.supercell.clashofclans"
     # How much bigger the game draws its buttons than the pictures in
     # templates/ (about 1.2 on a 16:9 BlueStacks window). 0 = work it out.

@@ -24,7 +24,7 @@ from typing import Callable
 
 from farmbot import standard
 from farmbot.config import EMULATORS, DeviceConfig
-from farmbot.device import CONSOLE_TEXT, NO_WINDOW, AdbDevice, Device, DeviceError, GaveUp, NoAnswer
+from farmbot.device import CONSOLE_TEXT, NO_WINDOW, AdbDevice, Device, DeviceError, GaveUp, NoAnswer, connected_serial
 
 log = logging.getLogger(__name__)
 
@@ -364,7 +364,7 @@ def open_device(cfg: DeviceConfig, sleep: Callable[[float], None] = time.sleep,
                 find: Callable[[], Install | None] = find_install,
                 running: Callable[[], bool] | None = None,
                 start: Callable[[Install, Instance], None] = launch,
-                make: Callable[[str, str], AdbDevice] = AdbDevice,
+                make: Callable[..., AdbDevice] = AdbDevice,
                 enable: Callable[[Install], None] = turn_on_adb,
                 clock: Callable[[], float] = time.monotonic,
                 apply: Callable[..., None] = apply_settings) -> Device:
@@ -373,7 +373,8 @@ def open_device(cfg: DeviceConfig, sleep: Callable[[float], None] = time.sleep,
     In "bluestacks" mode this finds BlueStacks, starts it if allowed and
     needed, and waits until its ADB answers (or, with ADB turned off,
     until its window opens). In "manual" mode ``serial``
-    is used as given.
+    selects an ADB device by serial or TCP address, or picks the sole
+    connected device when left blank.
     """
     if cfg.mode == "ldplayer":
         from farmbot import ldplayer
@@ -383,15 +384,24 @@ def open_device(cfg: DeviceConfig, sleep: Callable[[float], None] = time.sleep,
         from farmbot import mumu
 
         return mumu.open_device(cfg, sleep=sleep, clock=clock)
-    install = find() if cfg.mode == "bluestacks" or cfg.adb_path in ("", "adb") else None
-    adb = adb_program(cfg, install)
     if cfg.mode == "manual":
-        device = make(cfg.serial, adb)
+        serial = cfg.serial.strip()
+        if not serial:
+            adb = adb_program(cfg, None)
+            device = make(connected_serial(adb), adb, server_port=0)
+            device.connect(existing=True)
+            return device
+        # Use platform-tools for a discovered serial. TCP addresses can still
+        # use the bundled BlueStacks client when no explicit path is set.
+        install = find() if ":" in serial and cfg.adb_path in ("", "adb") else None
+        device = make(serial, adb_program(cfg, install))
         device.connect()
         return device
 
+    install = find()
     if install is None:
         raise DeviceError("BlueStacks 5 was not found. Install it, or pick another emulator in Advanced → Emulator.")
+    adb = adb_program(cfg, install)
     instance = install.instance(cfg.bluestacks_instance)
     if instance is None:
         names = ", ".join(i.display_name for i in install.instances) or "none"

@@ -18,7 +18,10 @@ mode = "bluestacks"
 bluestacks_instance = ""
 launch_emulator = true
 launch_timeout = 120.0
-serial = "127.0.0.1:5555"
+# For a USB-connected Android device, set mode = "manual" and leave serial blank for one ADB device.
+# If several devices are listed, enter the desired serial from adb devices.
+# Use Android Platform-Tools on PATH or set adb_path to the full path to adb.exe.
+serial = ""
 adb_path = "adb"
 package = "com.supercell.clashofclans"
 

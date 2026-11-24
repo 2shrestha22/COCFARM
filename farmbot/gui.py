@@ -23,6 +23,7 @@ import logging
 import queue
 import threading
 import time
+from dataclasses import replace
 from datetime import datetime
 from html import escape
 from pathlib import Path
@@ -2867,8 +2868,8 @@ class FarmbotWindow(FluentWindow):
             log.info("First run: created %s with the settings for BlueStacks at 860 x 672", self.config_path)
         self.profiles = accounts.Profiles.beside(self.config_path)
         self.config = accounts.load_active(self.config_path)  # with its profile's settings, if one is in use
-        if serial:
-            self.config.device.serial = serial
+        if serial is not None:
+            self.config.device.mode, self.config.device.serial = "manual", serial.strip()
         if farm > 1:
             self.config.home = self.config_path.parent  # its attack history and error screens
         self.events: queue.Queue = queue.Queue()
@@ -6114,9 +6115,9 @@ class FarmbotWindow(FluentWindow):
         """Advanced → Emulator's first cards: the emulator, its instance, and
         the connection and game check (the onboarding walks through these too)."""
         self.segments(group, "device.mode", FIF.PHONE, "Emulator",
-                      "The Android emulator Clash of Clans runs in on this PC. Other: any device by its address "
-                      "(below).", {"bluestacks": "BlueStacks", "ldplayer": "LDPlayer", "mumu": "MuMu",
-                                   "manual": "Other"}, width=90)
+                      "Choose Other for a USB-connected Android device or an emulator at an ADB address.",
+                      {"bluestacks": "BlueStacks", "ldplayer": "LDPlayer", "mumu": "MuMu",
+                       "manual": "Other"}, width=90)
         self.bluestacks_info = BodyLabel("")
         self.bluestacks_info.setWordWrap(True)
         self.bluestacks_info.setMinimumWidth(240)
@@ -6143,7 +6144,7 @@ class FarmbotWindow(FluentWindow):
         self.device_result.setWordWrap(True)
         tint(self.device_result, MUTED)
         self._card(group, None, FIF.CONNECT, "Check the connection",
-                   "Opens the emulator if needed and sets it up for COCFARM (it may restart once).",
+                   "Checks that COCFARM can see the Android screen. It opens supported emulators if needed.",
                    self.device_result, test)
         self.game_installed = CaptionLabel("Not checked yet")
         self.game_logged_in = CaptionLabel("Not checked yet")
@@ -6151,9 +6152,9 @@ class FarmbotWindow(FluentWindow):
             label.setWordWrap(True)
             tint(label, MUTED)
         self._card(group, None, FIF.GAME, "Clash of Clans installed",
-                   "Install it from the Play Store inside the emulator.", self.game_installed)
+                   "Install it from the Play Store on the selected device.", self.game_installed)
         self._card(group, None, FIF.VPN, "Signed in to your account",
-                   "Open the game once in the emulator and sign in; COCFARM can't do this part.", self.game_logged_in)
+                   "Open the game on the selected device and sign in.", self.game_logged_in)
         self.fix_button = PrimaryPushButton("")
         self.fix_button.clicked.connect(lambda: self._do_fix(self.fix_action, retry=self._test_connection))
         self.fix_action = ""
@@ -6343,11 +6344,14 @@ class FarmbotWindow(FluentWindow):
         self.number(emulator, "device.mumu_index", FIF.COPY, "MuMu instance number",
                     "1 is the first instance in MuMu Multi-instance.")
         self.depends("device.mode", "device.mumu_index", when="mumu")
-        self.text(emulator, "device.serial", FIF.CONNECT, "Device address",
-                  "For Emulator = Other: the ADB address of any emulator or phone, e.g. 127.0.0.1:5555.", width=200)
+        self.text(emulator, "device.serial", FIF.CONNECT, "ADB serial or address",
+                  "Leave blank for a single ADB device. To choose one, enter its USB serial or a TCP "
+                  "address such as 127.0.0.1:5555.", width=200)
         self.depends("device.mode", "device.serial", when="manual")
         self.text(link, "device.adb_path", ICON_TOOLS, "ADB program",
-                  "\"adb\" uses the one that comes with the emulator; or the full path to adb.exe.", width=200)
+                  "Enter the full path to adb.exe, or use adb. For USB, adb on PATH must be from Android "
+                  "Platform-Tools.",
+                  width=200)
         _add_expanding(emulator, fixed)
         _add_expanding(emulator, link)
 
@@ -7339,8 +7343,8 @@ class FarmbotWindow(FluentWindow):
         from farmbot import claims
         from farmbot.device import DeviceError
 
-        instances.active[self.farm] = self.config.device  # other farms leave its emulator alone
-        instance = claims.instance_name(self.config.device)
+        instance = None
+        auto_device = None
         instances.hooks[self.farm] = {"status": lambda s: self.events.put(("status", s)),
                                       "moved": lambda was, now: self.events.put(("moved", (was, now))),
                                       "stopped": stop_event.is_set}
@@ -7356,7 +7360,7 @@ class FarmbotWindow(FluentWindow):
 
         def attempt() -> None:
             self.events.put(("status", "Connecting to the device…"))
-            device = open_device_retrying(self.config.device)
+            device = auto_device if auto_device is not None else open_device_retrying(self.config.device)
             instances.connected.add(self.farm)
             vision = Vision(TemplateLibrary(self.config.bot.templates), self.config.bot.threshold)
             game = Game(device, vision, stop_event=stop_event, ui_scale=self.config.device.ui_scale,
@@ -7382,9 +7386,17 @@ class FarmbotWindow(FluentWindow):
 
         restarts: list[float] = []  # when this farm was started again by itself
         try:
+            if device_cfg.mode == "manual" and not device_cfg.serial.strip():
+                self.events.put(("status", "Looking for the connected Android device…"))
+                auto_device = open_device_retrying(device_cfg)
+                device_cfg = replace(device_cfg, serial=auto_device.serial)
+            elsewhere = instances.register_active(self.farm, device_cfg)
+            if elsewhere is not None:
+                raise DeviceError(f"{instances.describe(device_cfg)} is played by farm {elsewhere}.")
+            instance = claims.instance_name(device_cfg)
             elsewhere = claims.claim(instance, self.farm)
             if elsewhere is not None:  # another COCFARM program's farm plays it (two would fight over it)
-                raise DeviceError(f"{instances.describe(self.config.device)} is played by farm {elsewhere} in another "
+                raise DeviceError(f"{instances.describe(device_cfg)} is played by farm {elsewhere} in another "
                                   "COCFARM window: stop it there first, or give this farm another instance")
             while True:
                 try:
@@ -7426,7 +7438,8 @@ class FarmbotWindow(FluentWindow):
             account = instances.accounts_playing.pop(self.farm, None)
             if account:
                 claims.release(claims.account_name(account))
-            claims.release(instance)
+            if instance is not None:
+                claims.release(instance)
             self.events.put(("finished", None))
 
     def _wait_to_restart(self, stop_event: threading.Event, seconds: float, exc: Exception) -> bool:
@@ -7476,7 +7489,8 @@ class FarmbotWindow(FluentWindow):
     def _test_connection(self) -> None:
         if not self._autosave():
             return
-        self.device_result.setText("Connecting… (opening the emulator can take a minute)")
+        self.device_result.setText("Connecting…" if self.config.device.mode == "manual"
+                                   else "Connecting… (opening the emulator can take a minute)")
         tint(self.device_result, MUTED)
         self.fix_card.hide()
         self.test_button.setEnabled(False)
@@ -7512,7 +7526,8 @@ class FarmbotWindow(FluentWindow):
         self._spawn(work)
 
     def _emulator_name(self) -> str:
-        return {"bluestacks": "BlueStacks", "ldplayer": "LDPlayer", "mumu": "MuMu Player"}.get(
+        return {"bluestacks": "BlueStacks", "ldplayer": "LDPlayer", "mumu": "MuMu Player",
+                "manual": "the Android device"}.get(
             self.config.device.mode, "the emulator")
 
     def _show_device(self, ok: bool, message: str) -> None:

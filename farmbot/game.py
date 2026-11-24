@@ -967,8 +967,8 @@ class Game:
             done = can(**kw)
             if not done and not getattr(self, "_no_pinch_said", False):
                 self._no_pinch_said = True
-                log.warning("Can't zoom out: no touchscreen to pinch on was found on this emulator. A view "
-                            "left zoomed in stays so, and troops dropped on it may be refused")
+                log.warning("Automatic pinch is unavailable: ADB needs a writable touchscreen for two-finger zoom. "
+                            "The game keeps its current zoom level")
             return done
 
         if not force and self._still_zoomed_out(self.refresh()):
@@ -983,11 +983,11 @@ class Game:
             before = self.refresh()
             still = False
             for i in range(ZOOM_PASSES):
-                log.debug("Pinching out")
                 # The first goes twice; after it one pinch is enough to see
                 # whether the view still moves (a second costs ~1 s a battle).
                 if not (pinch() if i == 0 else _pinch_once(pinch)):
                     return False
+                log.debug("Sent pinch to zoom out")
                 self.wait(0.5)
                 after = self.refresh()
                 moved = pinch_slid(before, after)

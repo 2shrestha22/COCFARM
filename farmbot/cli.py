@@ -34,8 +34,8 @@ def _config(args: argparse.Namespace) -> Config:
 
 def _device(args: argparse.Namespace, cfg: Config, retry: bool = False) -> AdbDevice:
     """The device; with ``retry``, an emulator that doesn't answer is restarted (see open_device_retrying)."""
-    if args.serial:  # an explicit address always wins
-        cfg.device.mode, cfg.device.serial = "manual", args.serial
+    if args.serial is not None:  # an explicit override, including blank for discovery
+        cfg.device.mode, cfg.device.serial = "manual", args.serial.strip()
     return (bluestacks.open_device_retrying if retry else bluestacks.open_device)(cfg.device)
 
 
@@ -216,7 +216,8 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="farmbot", description=__doc__)
     parser.add_argument("-c", "--config", default=None, help="TOML settings file")
-    parser.add_argument("-s", "--serial", default=None, help="ADB serial, overrides the config")
+    parser.add_argument("-s", "--serial", default=None,
+                        help="ADB serial, overrides the config (empty selects the sole connected device)")
     parser.add_argument("-v", "--verbose", action="store_true")
     sub = parser.add_subparsers(dest="command", required=True)
 

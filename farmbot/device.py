@@ -11,6 +11,7 @@ import contextlib
 import logging
 import os
 import re
+import shlex
 import socket
 import struct
 import subprocess
@@ -85,6 +86,28 @@ def _run(cmd: list[str]) -> bytes:
     if result.returncode != 0:
         raise DeviceError(f"adb failed ({result.returncode}): {result.stderr.decode(errors='replace').strip()}")
     return result.stdout
+
+
+def connected_serial(adb_path: str) -> str:
+    """Return the only device on the default ADB server if it is ready."""
+    try:
+        listing = _run([adb_path, "devices"]).decode(errors="replace")
+    except DeviceError as exc:
+        raise DeviceError(f"ADB device discovery: {exc}") from exc
+    devices = []
+    for line in listing.splitlines():
+        serial, sep, state = line.partition("\t")
+        if sep and serial:
+            devices.append((serial, state.strip()))
+    if not devices:
+        raise DeviceError("No ADB devices listed. Connect your Android device and enable USB debugging.")
+    if len(devices) > 1:
+        serials = ", ".join(row[0] for row in devices)
+        raise DeviceError(f"Multiple ADB devices listed ({serials}). Select one by serial.")
+    serial, state = devices[0]
+    if state != "device":
+        raise DeviceError(f"ADB serial {serial!r}: {state}")
+    return serial
 
 
 class _NoServer(Exception):
@@ -486,13 +509,17 @@ INPUT_TAPS_PER_SHELL = 40  # keeps the fallback command short enough for old adb
 
 
 class AdbDevice:
-    """A device reachable as ``serial`` (e.g. ``127.0.0.1:5555``)."""
+    """A device reachable by its ADB serial or a TCP host and port."""
 
     def __init__(self, serial: str, adb_path: str = "adb", runner: Runner = _run,
                  server_port: int | None = None):
         self.serial = serial
         self.adb_path = adb_path
-        server_port = server_port_for(adb_path) if server_port is None else server_port  # 0: the usual shared one
+        self._tcp = ":" in serial
+        if server_port is None:
+            # Use the server from `adb devices` for locally discovered transports.
+            # A USB device can already be held by that server.
+            server_port = server_port_for(adb_path) if self._tcp else 0
         self._server = ["-P", str(server_port)] if server_port else []
         self._run = runner
         self._raw_screencap = True  # until the device sends something we can't decode
@@ -506,7 +533,10 @@ class AdbDevice:
         # its socket: starting adb.exe for each costs ~0.5 s on Windows, more
         # than most commands take. Not with a runner standing in for adb (tests).
         self._port = server_port or 5037
-        self._direct = runner is _run
+        server_override = any(os.environ.get(name) for name in (
+            "ADB_SERVER_SOCKET", "ANDROID_ADB_SERVER_ADDRESS", "ANDROID_ADB_SERVER_PORT"
+        ))
+        self._direct = runner is _run and (server_port != 0 or not server_override)
         self._shell_v2: bool | None = None  # the device's adbd has shell v2 (exit codes); old Android hasn't
 
     def _adb(self, *args: str) -> bytes:
@@ -519,7 +549,7 @@ class AdbDevice:
             if not any(s in str(exc) for s in ("not found", "offline", "closed")):
                 raise
             log.info("Lost the connection to %s; reconnecting", self.serial)
-            time.sleep(1 if ":" in self.serial else 3)  # an emulator-NNNN serial is found again by itself
+            time.sleep(1 if self._tcp else 3)
             self.connect(afresh="offline" in str(exc))
             return self._call(command, args)
 
@@ -547,17 +577,23 @@ class AdbDevice:
     def shell(self, *args: str) -> str:
         return self._adb("shell", *args).decode(errors="replace")
 
-    def connect(self, afresh: bool = False) -> None:
-        """``adb connect`` for TCP serials; a no-op for USB serials. With
-        ``afresh``, the old connection is dropped first: one adb thinks is
-        offline stays so ("already connected") until it's disconnected."""
-        if ":" in self.serial:
+    def connect(self, afresh: bool = False, *, existing: bool = False) -> None:
+        """Connect over TCP or check that ADB can reach a discovered serial."""
+        if self._tcp and not existing:
             if afresh:
                 with contextlib.suppress(DeviceError):
                     self._run([self.adb_path, *self._server, "disconnect", self.serial])
             out = self._run([self.adb_path, *self._server, "connect", self.serial]).decode(errors="replace")
             if "connected" not in out:
                 raise DeviceError(f"could not connect to {self.serial}: {out.strip()}")
+        else:
+            try:
+                state = self._run([self.adb_path, *self._server, "-s", self.serial, "get-state"])
+            except DeviceError as exc:
+                raise DeviceError(f"ADB serial {self.serial!r}: {exc}") from exc
+            status = state.decode(errors="replace").strip()
+            if status != "device":
+                raise DeviceError(f"ADB serial {self.serial!r}: {status or 'no state'}")
         if self.serial not in _announced:  # not again on every try while an emulator starts
             _announced.add(self.serial)
             log.info("Using device %s", self.serial)
@@ -620,6 +656,11 @@ class AdbDevice:
             try:
                 abi = self.shell("getprop", "ro.product.cpu.abi")
                 found = parse_touchscreen(self.shell("getevent", "-p"), 24 if "64" in abi else 16)
+                if found:
+                    path = shlex.quote(found.path)
+                    if self.shell(f"if test -w {path}; then echo writable; fi").strip() != "writable":
+                        log.info("ADB cannot write to touchscreen %s", found.path, extra={"file_only": True})
+                        found = None
                 if found:
                     self._dd = "no such tool" not in self.shell("echo | dd of=/dev/null 2>&1; true").lower()
                     if not self._size:
@@ -736,7 +777,7 @@ class AdbDevice:
             if not any(s in str(exc) for s in ("not found", "offline", "closed")):
                 raise
             log.info("Lost the connection to %s; reconnecting", self.serial)
-            time.sleep(1 if ":" in self.serial else 3)
+            time.sleep(1 if self._tcp else 3)
             self.connect(afresh="offline" in str(exc))
             _server_push(self._port, self.serial, data, remote)
 
