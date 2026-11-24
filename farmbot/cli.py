@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import shutil
 import signal
 import sys
 import threading
@@ -15,11 +16,11 @@ import numpy as np
 
 from farmbot import bluestacks, catalog, imagefile, text
 from farmbot.accounts import load_active
-from farmbot.bot import Bot
-from farmbot.config import EMULATORS, Config, ensure_config
-from farmbot.device import AdbDevice, DeviceError
-from farmbot.game import Game, T, normalize_screen
+from farmbot.config import Config, DeviceConfig, ensure_config
+from farmbot.device import AdbDevice, DeviceError, list_adb_devices
+from farmbot.game import T, normalize_screen
 from farmbot.geometry import Rect
+from farmbot.runner import run_farm
 from farmbot.vision import TemplateLibrary, Vision
 
 
@@ -32,11 +33,10 @@ def _config(args: argparse.Namespace) -> Config:
     return load_active(args.config)
 
 
-def _device(args: argparse.Namespace, cfg: Config, retry: bool = False) -> AdbDevice:
-    """The device; with ``retry``, an emulator that doesn't answer is restarted (see open_device_retrying)."""
+def _device(args: argparse.Namespace, cfg: Config) -> AdbDevice:
     if args.serial is not None:  # an explicit override, including blank for discovery
         cfg.device.mode, cfg.device.serial = "manual", args.serial.strip()
-    return (bluestacks.open_device_retrying if retry else bluestacks.open_device)(cfg.device)
+    return bluestacks.open_device(cfg.device)
 
 
 def _screen(args: argparse.Namespace, cfg: Config) -> np.ndarray:
@@ -120,17 +120,54 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     return 0
 
 
+def _device_selection(device: DeviceConfig, states: dict[str, str]) -> str:
+    if device.mode == "manual":
+        serial = device.serial.strip()
+        label = serial
+        if not serial:
+            if not states:
+                return "automatic selection (not connected)"
+            if len(states) > 1:
+                return "automatic selection (multiple devices found, select a serial)"
+            serial, = states
+            label = f"automatic selection: {serial}"
+    else:
+        from farmbot import instances
+
+        label = instances.describe(device)
+        key = instances.key_of(device).casefold()
+        choices = instances.choices(device)
+        if device.mode == "bluestacks" and not key:
+            choice = next(iter(choices), None)
+        else:
+            choice = next((item for item in choices if key in (item.key.casefold(), item.label.casefold())), None)
+        if choice is None or not choice.port:
+            return f"{label} (ADB address unavailable)"
+        serial = f"127.0.0.1:{choice.port}"
+        label = f"{label} [{serial}]"
+    state = states.get(serial)
+    status = "connected" if state == "device" else f"not connected: {state}" if state else "not connected"
+    return f"{label} ({status})"
+
+
 def cmd_devices(args: argparse.Namespace) -> int:
-    install = bluestacks.find_install()
-    if install is None:
-        print("BlueStacks 5 not found.")
+    path = Path(args.config or "farmbot.toml")
+    device = load_active(path).device if args.config is not None or path.is_file() else DeviceConfig()
+    if args.serial is not None:
+        device.mode, device.serial = "manual", args.serial.strip()
+    install = bluestacks.find_install() if device.adb_path in ("", "adb") and not shutil.which("adb") else None
+    devices = list_adb_devices(bluestacks.adb_program(device, install))
+    print(f"Configured device: {_device_selection(device, dict(devices))}")
+    if not devices:
+        print("No ADB devices found.")
         return 2
-    print(f"BlueStacks: {install.install_dir}")
-    print(f"ADB access: {'on' if install.adb_enabled else 'OFF (Settings > Advanced > Android Debug Bridge)'}")
-    print(f"Running:    {'yes' if bluestacks.is_running() else 'no'}")
-    for inst in install.instances:
-        print(f"  - {inst.label}")
-    return 0
+    print("ADB devices:")
+    for serial, state in devices:
+        print(f"  {serial}\t{state}")
+    if any(state == "device" for _, state in devices):
+        return 0
+    print("No ADB devices are ready.")
+    return 2
 
 
 def cmd_pictures(args: argparse.Namespace) -> int:
@@ -169,19 +206,38 @@ def cmd_run(args: argparse.Namespace) -> int:
         cfg.home = Path(args.config or "farmbot.toml").resolve().parent
     if args.max_attacks is not None:
         cfg.bot.max_attacks = args.max_attacks
-    missing = [] if cfg.search.maintain_only else catalog.missing(TemplateLibrary(cfg.bot.templates), required_only=True)
-    if missing:
-        print("error: pictures missing: " + ", ".join(p.name for p in missing) + " (see 'farmbot pictures')", file=sys.stderr)
-        return 1
-    if not cfg.search.maintain_only and catalog.slow_exit(TemplateLibrary(cfg.bot.templates)):
-        print("note: without buttons/return_home and buttons/okay the bot closes the game to leave each battle")
-    device = _device(args, cfg, retry=True)
     stop = threading.Event()
     signal.signal(signal.SIGINT, lambda *_: stop.set())
-    reopen = (lambda: bluestacks.restart_emulator(cfg.device)) if cfg.device.mode in EMULATORS else None
-    Bot(Game(device, _vision(cfg), stop_event=stop, ui_scale=cfg.device.ui_scale,
-             window_scale=cfg.device.window_scale,
-             picture_scales=cfg.device.picture_scales), cfg, reopen_device=reopen).run()
+    trace_dir = cfg.home / "screens" / "deploy-trace" if args.trace_deploy else None
+    run_farm(cfg, stop, serial=args.serial, deploy_trace=trace_dir)
+    return 0
+
+
+def cmd_web(args: argparse.Namespace) -> int:
+    from farmbot.web import serve
+
+    path = Path(args.config or "farmbot.toml").resolve()
+    if args.config is None:
+        ensure_config(path)
+    try:
+        return serve(path, args.serial, args.port)
+    except OSError as exc:
+        raise ValueError(f"Could not start the dashboard: {exc}") from exc
+
+
+def cmd_display(args: argparse.Namespace) -> int:
+    from farmbot.display import configure_manual
+
+    cfg = _config(args)
+    if args.serial is not None:
+        cfg.device.mode, cfg.device.serial = "manual", args.serial.strip()
+    if args.action == "apply":
+        for suffix in ("width", "height", "dpi"):
+            value = getattr(args, suffix)
+            if value is not None:
+                setattr(cfg.device, f"manual_{suffix}", value)
+        cfg.validate()
+    print(configure_manual(cfg.device, args.action))
     return 0
 
 
@@ -232,9 +288,26 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("run", help="start farming without the GUI (Ctrl+C to stop)")
     p.add_argument("--max-attacks", type=int, default=None)
     p.add_argument("--farm", type=int, default=1, help="which farm's settings (the GUI's Farms page adds them)")
+    p.add_argument("--trace-deploy", action="store_true",
+                   help="save live deployment frames, candidates and troop inputs to screens/deploy-trace")
     p.set_defaults(func=cmd_run)
 
-    p = sub.add_parser("devices", help="list BlueStacks instances and their ADB ports")
+    p = sub.add_parser("web", help="start the local web dashboard")
+    p.add_argument("--port", type=int, default=8765, help="loopback port (0 picks a free port)")
+    p.add_argument("--no-browser", action="store_true", help=argparse.SUPPRESS)  # accepted by older launch scripts
+    p.set_defaults(func=cmd_web)
+
+    p = sub.add_parser("display", help="read, apply, or reset a custom ADB device's display")
+    actions = p.add_subparsers(dest="action", required=True)
+    apply = actions.add_parser("apply", help="set the width, height, and density")
+    apply.add_argument("--width", type=int, help="width in pixels (defaults to the config)")
+    apply.add_argument("--height", type=int, help="height in pixels (defaults to the config)")
+    apply.add_argument("--dpi", type=int, help="density (defaults to the config)")
+    actions.add_parser("reset", help="restore the device's native size and density")
+    actions.add_parser("show", help="read the current size and density")
+    p.set_defaults(func=cmd_display)
+
+    p = sub.add_parser("devices", help="show the configured device and devices visible to ADB")
     p.set_defaults(func=cmd_devices)
 
     p = sub.add_parser("pictures", help="list the button pictures the bot uses and which are missing")
@@ -328,7 +401,7 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)-7s %(message)s",
         datefmt="%H:%M:%S",
     )
-    if args.func in (cmd_run, cmd_gui):
+    if args.func in (cmd_run, cmd_gui, cmd_web):
         log_to_file(LOG_FILE)
         from farmbot import diag
 

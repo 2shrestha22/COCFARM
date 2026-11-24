@@ -71,7 +71,7 @@ You can also check by hand under **Advanced → App → Updates**.
 2. Enable USB debugging on the Android device, connect it by USB, and accept the debugging prompt.
    [Android USB setup](https://developer.android.com/studio/run/device)
 3. In COCFARM, go to **Advanced → Emulator** and select **Other**. Leave **ADB serial or address**
-   blank to use the sole device listed by ADB. If several devices are listed, run `adb devices` and
+   blank to use the sole device listed by ADB. If several devices are listed, run `farmbot devices` and
    enter the serial for the device you want. If `adb` is outside your PATH, set **ADB program** under
    **ADB and sound** to the full path to `adb.exe`.
 4. Open Clash of Clans on the device and click **Check now** under **Check the connection**.
@@ -79,6 +79,20 @@ You can also check by hand under **Advanced → App → Updates**.
 From the command line, `farmbot run` uses the connected device when **Other** is selected and
 the serial is blank. This is the default on macOS and Linux when the config omits the device mode
 and serial. Use `farmbot --serial YOUR_SERIAL run` to choose a specific device.
+
+Under **Advanced → Emulator → Custom device**, **Apply display** runs Android's
+`wm size` and `wm density` with the width, height, and DPI you enter.
+**Reset display** restores both native values. The same actions are available
+in the terminal:
+
+```sh
+farmbot display apply --width 860 --height 672 --dpi 240
+farmbot display show
+farmbot display reset
+```
+
+Enable **Use rooted ADB for gestures** (or set `device.rooted_adb = true`)
+to request root when farming starts on a device that supports rooted debugging.
 
 ### Tested emulators
 
@@ -200,10 +214,18 @@ Every setting is listed in [`farmbot.example.toml`](farmbot.example.toml).
 pip install -e .
 farmbot gui         # the window
 farmbot run         # farm without the window
-farmbot devices     # list emulator instances and their ADB ports
+farmbot web         # start the local dashboard and print its URL
+farmbot devices     # show the selected device's connection and list ADB devices
 farmbot inspect     # show the loot, troop cards and deploy points it sees
 farmbot pictures    # list the button pictures and which are missing
 ```
+
+The web dashboard controls a farm started from the dashboard. Its sidebar and
+tabs follow the desktop app. Use **Farms** to select an existing account
+profile. It uses the same `farmbot.toml` as the CLI,
+and settings saved during a run take effect on the next start. Run `farmbot web`
+and open the URL printed in your terminal. Press Ctrl+C to stop the dashboard
+and its farm.
 
 **Releases:** every push and pull request makes the
 [`windows-exe`](.github/workflows/windows-exe.yml) workflow build

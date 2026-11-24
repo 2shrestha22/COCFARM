@@ -8,7 +8,7 @@ import math
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Callable, Iterator
+from typing import TYPE_CHECKING, Callable, Iterator
 
 import cv2
 import numpy as np
@@ -21,8 +21,10 @@ from farmbot.geometry import Point, Rect, points_along
 from farmbot.tasks.search import Loot, loot_value, read_loot
 from farmbot.tasks.village import open_event_chests, pick_reward
 
-log = logging.getLogger(__name__)
+if TYPE_CHECKING:
+    from farmbot.deploytrace import DeployTrace
 
+log = logging.getLogger(__name__)
 
 def deploy_edges(game: Game, cfg: Config, war_map: bool = False) -> tuple[dict[str, list[Point]], Point | None]:
     """Points to drop troops on, per attacked side, and the base centre.
@@ -42,6 +44,9 @@ def deploy_edges(game: Game, cfg: Config, war_map: bool = False) -> tuple[dict[s
     sources: dict[str, str] = {}
     center: Point | None = None
     outline: list[Point] = []  # the whole base's edge, as first found (see :func:`loot_front`)
+    trace = game.deploy_trace
+    red_line = {}
+    red_retry = None
     detectors = (
         ("red line", cfg.redline.enabled, lambda: rl.detect(screen, cfg.redline), cfg.redline.min_side_points),
         ("building ring", cfg.zone.enabled, lambda: deployzone.detect(screen, cfg.zone), 1),
@@ -67,11 +72,17 @@ def deploy_edges(game: Game, cfg: Config, war_map: bool = False) -> tuple[dict[s
     for name, enabled, detect, minimum in detectors:
         if not enabled or all(s in found for s in sides):
             continue
-        take(name, detect(), minimum, screen)
+        result = detect()
+        take(name, result, minimum, screen)
+        if name == "red line" and result is not None:
+            red_line = result.sides
         if name == "red line" and not all(s in found for s in sides):
             # the line pulses: a side too faint on one frame shows on the next
             again = game.refresh()
-            take(name, rl.detect(again, cfg.redline), minimum, again)
+            retry = rl.detect(again, cfg.redline)
+            take(name, retry, minimum, again)
+            if trace is not None:
+                red_retry = again, retry.sides if retry else {}
     lines = fixed_lines(screen.shape[1], cfg)
     for side in sides:
         if side not in found:
@@ -91,6 +102,11 @@ def deploy_edges(game: Game, cfg: Config, war_map: bool = False) -> tuple[dict[s
     log.info("Deploy points: %s", ", ".join(f"{s} {len(found[s])} ({sources[s]})" for s in sides))
     game.deploy_origins = dict(sources)
     game.deploy_outline = outline
+    if trace is not None:
+        trace.frame(screen, "Deployment plan", red_line, found, sources)
+        if red_retry is not None:
+            retry_screen, retry_points = red_retry
+            trace.frame(retry_screen, "Red-line retry", retry_points, {}, {}, track_inputs=False)
     return found, center
 
 
@@ -408,7 +424,7 @@ class DeployPoints:
         self.misses[side] = 0
         self.seen_land.add(side)
 
-    def redraw(self, side: str, screen: np.ndarray, cfg: Config) -> bool:
+    def redraw(self, side: str, screen: np.ndarray, cfg: Config, trace: DeployTrace | None = None) -> bool:
         """A batch from ``side`` was refused, and a refused tap makes the
         game show the red line: read it off ``screen`` and move the sides
         it shows (that haven't landed troops yet) onto it, once each. True
@@ -419,7 +435,7 @@ class DeployPoints:
         found = rl.detect(screen, cfg.redline)
         if found is None:
             return False
-        moved = []
+        moved = {}
         for s, points in found.sides.items():
             if s not in self.streams or (s != side and (s in self.seen_land or s in self.redrawn)):
                 continue
@@ -429,9 +445,11 @@ class DeployPoints:
                 self.streams[s] = itertools.cycle(human.walk(self.rng, points, self.human_like))
                 self.redrawn.add(s)
                 self.misses[s] = 0
-                moved.append(s)
+                moved[s] = points
         if moved:
             log.info("Deploy points: the red line showed; %s moved onto it", ", ".join(moved))
+            if trace is not None:
+                trace.frame(screen, "Updated after rejected inputs", found.sides, moved, dict.fromkeys(moved, "red line"))
         return side in moved
 
     def restore(self) -> None:
@@ -931,7 +949,7 @@ def deploy_card(game: Game, card: Card, points: Iterator[Point], cfg: Config,
             side, batch = points.take(taps)
         else:
             side, batch = None, [next(points) for _ in range(taps)]
-        game.tap_many(batch, jitter=3, pause=_burst(game, cfg, taps, acfg.tap_delay))
+        game.tap_many(batch, jitter=3, pause=_burst(game, cfg, taps, acfg.tap_delay), troop_deploy=card.kind == "troop")
         _wait(game, cfg, 0.3, SETTLE)
         after = game.refresh()
         if pick_reward(game):
@@ -962,7 +980,7 @@ def deploy_card(game: Game, card: Card, points: Iterator[Point], cfg: Config,
                 points.went(side, batch, (left - now) if now and left else len(batch))
             # Unread, it's at most the taps fewer (some may have been refused).
             left = now or (max(left - taps, 1) if left else None)
-        elif side is not None and (points.redraw(side, after, cfg) or points.refused(side)):
+        elif side is not None and (points.redraw(side, after, cfg, game.deploy_trace) or points.refused(side)):
             continue  # before stays: nothing changed
         else:
             stalled += 1
@@ -1190,7 +1208,7 @@ def deploy_taps(game: Game, card: Card, points: Iterator[Point], taps: int, cfg:
     _wait(game, cfg, 0.15, SETTLE)
     # (round the sides, a point each)
     batch = points.round(taps) if isinstance(points, DeployPoints) else [next(points) for _ in range(taps)]
-    game.tap_many(batch, jitter=3, pause=_burst(game, cfg, taps, cfg.attack.tap_delay))
+    game.tap_many(batch, jitter=3, pause=_burst(game, cfg, taps, cfg.attack.tap_delay), troop_deploy=card.kind == "troop")
 
 
 def loot_left(game: Game, cfg: Config) -> Loot | None:
@@ -1726,6 +1744,15 @@ def attack(game: Game, cfg: Config, target: Loot | None = None, room: dict[str, 
     The bar goes troops, siege machines, heroes, spells. When it holds more
     than fits on the screen, it's deployed a screenful at a time, in that
     order, scrolling on until its end."""
+    try:
+        return _attack(game, cfg, target, room, for_stars, war_map, village)
+    finally:
+        if game.deploy_trace is not None:
+            game.deploy_trace.save()
+
+
+def _attack(game: Game, cfg: Config, target: Loot | None, room: dict[str, int] | None,
+            for_stars: bool, war_map: bool, village) -> float | None:
     league = cfg.attack.league_bonus and not for_stars
     if league:
         cfg = league_settings(cfg)
@@ -1997,6 +2024,8 @@ def attack(game: Game, cfg: Config, target: Loot | None = None, room: dict[str, 
         placed = here if scrolls else placed + here
         if not scrolls or not scroll_bar(game, cfg):
             break
+    if game.deploy_trace is not None:
+        game.deploy_trace.save()
     if singles_seen:
         log.info("Placed %d of %d hero/siege card(s)", placed_total, singles_seen)
     landed = troops_out or placed_total or edge_points.seen_land or fixed_points.seen_land

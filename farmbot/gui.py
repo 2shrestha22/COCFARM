@@ -2876,6 +2876,7 @@ class FarmbotWindow(FluentWindow):
         self.stop_event: threading.Event | None = None
         self.pause_event = threading.Event()  # Pause: the bot waits at its next safe point
         self.thread: threading.Thread | None = None
+        self._changing_display = False
         self.bindings: dict[str, Binding] = {}
         self.cards: dict[str, Card] = {}
         self.dependents: list[tuple[str, list[Binding], Any]] = []
@@ -6348,6 +6349,22 @@ class FarmbotWindow(FluentWindow):
                   "Leave blank for a single ADB device. To choose one, enter its USB serial or a TCP "
                   "address such as 127.0.0.1:5555.", width=200)
         self.depends("device.mode", "device.serial", when="manual")
+        custom = self.manual_display_group = tab.add(SettingCardGroup("Custom device"))
+        self.number(custom, "device.manual_width", FIF.FIT_PAGE, "Display width", "In pixels.", "px")
+        self.number(custom, "device.manual_height", FIF.FIT_PAGE, "Display height", "In pixels.", "px")
+        self.number(custom, "device.manual_dpi", FIF.FIT_PAGE, "Display density", "Density when applying the display.", "DPI")
+        self.switch(custom, "device.rooted_adb", ICON_TOOLS, "Use rooted ADB for gestures",
+                    "Requests root when the farm starts, if the device supports rooted debugging.")
+        self.manual_display_result = CaptionLabel("Not checked yet")
+        self.manual_display_result.setWordWrap(True)
+        self.manual_display_buttons = []
+        for action, title in (("show", "Read display"), ("apply", "Apply display"), ("reset", "Reset display")):
+            button = PushButton(title)
+            button.clicked.connect(lambda *_, action=action: self._change_manual_display(action))
+            self.manual_display_buttons.append(button)
+        self._card(custom, None, FIF.FIT_PAGE, "Android display",
+                   "Apply the values above, or restore the device’s native size and density.",
+                   self.manual_display_result, *self.manual_display_buttons)
         self.text(link, "device.adb_path", ICON_TOOLS, "ADB program",
                   "Enter the full path to adb.exe, or use adb. For USB, adb on PATH must be from Android "
                   "Platform-Tools.",
@@ -6773,6 +6790,7 @@ class FarmbotWindow(FluentWindow):
                     if card is not None:
                         card.show_warning(note)
         self.instance_card.setVisible(form.get("device.mode") == "bluestacks")
+        self.manual_display_group.setVisible(form.get("device.mode") == "manual")
         for path, mode in EMULATOR_ONLY.items():  # only the chosen emulator's settings
             card = self.cards[path]
             if card.isVisibleTo(card.parentWidget()) != (form.get("device.mode") == mode):
@@ -7086,6 +7104,10 @@ class FarmbotWindow(FluentWindow):
         return self.thread is not None and self.thread.is_alive()
 
     def start(self, *_, show: bool = True) -> None:
+        if self._changing_display:
+            notice(InfoBarIcon.WARNING, "Display operation in progress", "Wait for it to finish, then press Start.",
+                   duration=5000, parent=self)
+            return
         self.save_timer.stop()
         if self._running():
             if self.pause_event.is_set():  # Resume
@@ -7334,7 +7356,7 @@ class FarmbotWindow(FluentWindow):
 
     def _run_bot(self, stop_event: threading.Event) -> None:
         from farmbot.bot import Bot
-        from farmbot.bluestacks import open_device_retrying, restart_emulator
+        from farmbot.bluestacks import open_device_retrying, prepare_gestures, restart_emulator
         from farmbot.game import Game
         from farmbot.vision import TemplateLibrary, Vision
 
@@ -7361,6 +7383,11 @@ class FarmbotWindow(FluentWindow):
         def attempt() -> None:
             self.events.put(("status", "Connecting to the device…"))
             device = auto_device if auto_device is not None else open_device_retrying(self.config.device)
+            if stop_event.is_set():
+                raise Stopped
+            prepare_gestures(self.config.device, device)
+            if stop_event.is_set():
+                raise Stopped
             instances.connected.add(self.farm)
             vision = Vision(TemplateLibrary(self.config.bot.templates), self.config.bot.threshold)
             game = Game(device, vision, stop_event=stop_event, ui_scale=self.config.device.ui_scale,
@@ -7485,6 +7512,41 @@ class FarmbotWindow(FluentWindow):
                f"(with the game and its login) to instance {now + 1}, which has a port of its own. Instance "
                f"{was + 1} isn't needed any more: deleting it frees its disk space.",
                duration=30000, parent=self._shown(), button=delete)
+
+    def _change_manual_display(self, action: str) -> None:
+        from farmbot.display import configure_manual
+
+        if self._running():
+            self.manual_display_result.setText("Stop the farm before changing its display.")
+            return
+        if self._changing_display or self._value("device.mode") != "manual":
+            return
+        if action == "apply" and not self._autosave():
+            self.manual_display_result.setText("Correct the highlighted settings before applying the display.")
+            return
+        cfg = replace(self.config.device, mode="manual", serial=str(self._value("device.serial") or "").strip(),
+                      adb_path=str(self._value("device.adb_path") or "").strip())
+        self._changing_display = True
+        self.manual_display_result.setText("Working…")
+        for button in self.manual_display_buttons:
+            button.setEnabled(False)
+
+        def finish(message: str, ok: bool) -> None:
+            self._changing_display = False
+            self.manual_display_result.setText(message)
+            tint(self.manual_display_result, GOOD if ok else BAD)
+            for button in self.manual_display_buttons:
+                button.setEnabled(True)
+
+        def work() -> None:
+            try:
+                message = configure_manual(cfg, action)
+            except Exception as exc:
+                self.events.put(("call", lambda message=str(exc): finish(message, False)))
+            else:
+                self.events.put(("call", lambda: finish(message, True)))
+
+        self._spawn(work)
 
     def _test_connection(self) -> None:
         if not self._autosave():

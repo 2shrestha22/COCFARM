@@ -7,11 +7,12 @@ next to the control that caused it.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
 from farmbot.human import HABITS
-from farmbot.config import RESOURCES, SIDES, Config, unreachable_minimums, unreachable_note
+from farmbot.config import MAX_WM_NUMBER, MIN_WM_DENSITY, RESOURCES, SIDES, Config, unreachable_minimums, unreachable_note
 
 SIDE_LABELS = {"nw": "Top-left (NW)", "ne": "Top-right (NE)", "sw": "Bottom-left (SW)", "se": "Bottom-right (SE)"}
 
@@ -62,6 +63,7 @@ FIELDS = [
     Field("attack.league_bonus_damage", "percent", 40, 100),
     Field("attack.star_bonus", "bool"),
     Field("attack.end_when_no_loot", "bool"),
+    Field("attack.end_when_full", "bool"),
     Field("attack.no_loot_seconds", "float", 3, 180),
     Field("attack.end_at_loot_share", "percent", 0, 100),
     Field("ranked.enabled", "bool"),
@@ -106,6 +108,7 @@ FIELDS = [
     Field("builder.collect_resources", "bool"),
     Field("builder.collect_minutes", "int", 0, 1440),
     Field("builder.collect_cart", "bool"),
+    Field("builder.clock_tower", "bool"),
     Field("builder.cart_every_min", "int", 1, 100),
     Field("builder.cart_every_max", "int", 1, 100),
     Field("builder.walls", "bool"),
@@ -214,6 +217,10 @@ FIELDS = [
     Field("device.mumu_index", "instance", 1, 100),
     Field("device.serial", "text"),
     Field("device.adb_path", "text"),
+    Field("device.manual_width", "int", 1, MAX_WM_NUMBER),
+    Field("device.manual_height", "int", 1, MAX_WM_NUMBER),
+    Field("device.manual_dpi", "int", MIN_WM_DENSITY, MAX_WM_NUMBER),
+    Field("device.rooted_adb", "bool"),
 ]
 BY_PATH = {f.path: f for f in FIELDS}
 
@@ -231,6 +238,8 @@ def parse_amount(text: str) -> int:
         value = float(cleaned) * multiplier
     except ValueError:
         raise ValueError("enter a number, e.g. 500k or 1,500,000") from None
+    if not math.isfinite(value):
+        raise ValueError("enter a finite amount")
     if value < 0:
         raise ValueError("cannot be negative")
     return int(round(value))
@@ -318,6 +327,8 @@ def _parse(field: Field, raw: Any) -> Any:
             else float(str(raw).strip())
     except ValueError:
         raise ValueError("enter a whole number" if field.kind in ("int", "instance") else "enter a number") from None
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError("enter a finite number")
     if field.low is not None and value < field.low or field.high is not None and value > field.high:
         raise ValueError(f"use {field.low:g} to {field.high:g}")
     if field.kind == "instance":

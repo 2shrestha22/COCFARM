@@ -88,8 +88,8 @@ def _run(cmd: list[str]) -> bytes:
     return result.stdout
 
 
-def connected_serial(adb_path: str) -> str:
-    """Return the only device on the default ADB server if it is ready."""
+def list_adb_devices(adb_path: str) -> list[tuple[str, str]]:
+    """List the serial and connection state of each device on the ADB server."""
     try:
         listing = _run([adb_path, "devices"]).decode(errors="replace")
     except DeviceError as exc:
@@ -99,6 +99,12 @@ def connected_serial(adb_path: str) -> str:
         serial, sep, state = line.partition("\t")
         if sep and serial:
             devices.append((serial, state.strip()))
+    return devices
+
+
+def connected_serial(adb_path: str) -> str:
+    """Return the only device on the default ADB server if it is ready."""
+    devices = list_adb_devices(adb_path)
     if not devices:
         raise DeviceError("No ADB devices listed. Connect your Android device and enable USB debugging.")
     if len(devices) > 1:
@@ -524,9 +530,8 @@ class AdbDevice:
         self._run = runner
         self._raw_screencap = True  # until the device sends something we can't decode
         self._touch: TouchScreen | None | bool = None  # None: not looked for yet; False: none usable
-        # Tap bursts are written to the touchscreen. Switched off when they don't reach the game; pinches
-        # and curved swipes still are (a battle left zoomed in refuses every tap, and needs its pinch).
-        self._fast_taps = True
+        self._fast_taps = True  # disabled for the session if raw taps fail
+        self._native_display: bool | None = None  # check once per screenshot size
         self._dd = True  # dd works in the shell (Android 14's toybox has none: tail and head stand in)
         self._size: tuple[int, int] | None = None  # screen size, from the last screenshot
         # Shell commands and screenshots go straight to the adb server over
@@ -594,13 +599,30 @@ class AdbDevice:
             status = state.decode(errors="replace").strip()
             if status != "device":
                 raise DeviceError(f"ADB serial {self.serial!r}: {status or 'no state'}")
+        self._native_display = None
         if self.serial not in _announced:  # not again on every try while an emulator starts
             _announced.add(self.serial)
             log.info("Using device %s", self.serial)
 
+    def request_root(self) -> None:
+        """Request root from adbd and verify that the shell can use it."""
+        if self.shell("id", "-u").strip() != "0":
+            answer = self._adb("root").decode(errors="replace").strip()
+            self._shell_v2 = None
+            if self.shell("id", "-u").strip() != "0":
+                raise DeviceError(f"ADB is still unprivileged after requesting root. {answer}".strip())
+        # A device previously checked without root may now support raw touches.
+        self._touch = None
+        self._fast_taps = True
+        self._native_display = None
+
     def screenshot(self) -> np.ndarray:
         image = self._screencap()
-        self._size = (image.shape[1], image.shape[0])
+        size = (image.shape[1], image.shape[0])
+        if self._size is not None and self._size != size:
+            self._native_display = None
+            self._touch = None
+        self._size = size
         return image
 
     def _screencap(self) -> np.ndarray:
@@ -678,28 +700,41 @@ class AdbDevice:
     def stop_fast_taps(self) -> bool:
         """Tap with ``input tap`` from now on, for when taps written to the
         touchscreen don't reach the game. False if it already did."""
-        if not self._fast_taps or not self._touch:
-            self._fast_taps = False
+        if not self._fast_taps or not self._native_display or not self._touch:
             return False
+        self._fast_taps = False
         log.warning("Taps written to the touchscreen (%s) are not reaching the game; using input tap",
                     self._touch.path)
-        self._fast_taps = False
         return True
+
+    def _can_use_raw_taps(self) -> bool:
+        if not self._fast_taps:
+            return False
+        if self._native_display is None:
+            from farmbot.display import matches_physical_size
+
+            # Android can letterbox a size override within the physical panel.
+            # Standard input uses Android's coordinates and handles that offset.
+            try:
+                self._native_display = matches_physical_size(self.shell("wm", "size"))
+            except DeviceError:
+                self._native_display = False
+            log.debug("Tap batches: %s", "raw touchscreen" if self._native_display else "Android input tap")
+        return self._native_display
 
     def tap_many(self, points: list[tuple[int, int]], pause: float | list[float] = 0.0) -> None:
         """Tap every point quickly, ``pause`` seconds apart at most (a list:
         the pause after each tap, one per point, so a burst needn't keep
         one even beat).
 
-        Taps are written straight into the touchscreen device (as
-        ClashFarmer does): one file pushed and played back in one shell
-        call, about 50 ms a tap, against 100-150 ms for each ``input tap``.
-        Falls back to chained ``input tap`` commands.
+        With matching display sizes and a writable touchscreen, batches can
+        go straight into the touchscreen. Other devices use chained
+        ``input tap`` commands in Android's screen coordinates.
         """
         points = [(int(x), int(y)) for x, y in points]
         if not points:
             return
-        touch = self._touchscreen() if self._fast_taps else None
+        touch = self._touchscreen() if self._can_use_raw_taps() else None
         if touch and self._size:
             try:
                 self._write_taps(points, touch, pause)

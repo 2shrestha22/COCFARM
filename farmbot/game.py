@@ -9,7 +9,7 @@ import random
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 import cv2
 import numpy as np
@@ -20,6 +20,9 @@ from farmbot.timings import Ledger
 from farmbot.geometry import Rect
 from farmbot.text import TextStyle
 from farmbot.vision import Match, Vision, _resized, _scale_pool, _score, best_scale, match_template
+
+if TYPE_CHECKING:
+    from farmbot.deploytrace import DeployTrace
 
 log = logging.getLogger(__name__)
 
@@ -599,6 +602,7 @@ class Game:
         self.deploy_failed: str | None = None
         self.deploy_origins: dict[str, str] = {}  # the last battle's deploy sides: where their points came from
         self.deploy_outline: list = []  # the last battle's whole base edge, every side (see deploy_edges)
+        self.deploy_trace: DeployTrace | None = None
         self.last_result = None  # the last battle's stars and damage, off its result screen (see attack.read_result)
         self.pinch_pans = False  # a zoom-out moved the map instead (see _pinch_panned): the game wants a restart
         # The village all the way out (the bot's, from when the game loaded): a
@@ -647,7 +651,10 @@ class Game:
     def refresh(self) -> np.ndarray:
         self.raw = self.device.screenshot()
         self._has = {}
-        return self._rescale()
+        screen = self._rescale()
+        if self.deploy_trace is not None:
+            self.deploy_trace.capture_response(screen)
+        return screen
 
     def _rescale(self) -> np.ndarray:
         h = self.raw.shape[0]
@@ -885,7 +892,10 @@ class Game:
             raise Stopped
         self.check_in_front()
         dx, dy = self._offset(3, self.uses("tap_spread"))
-        press(round((x + dx) * self.scale), round((y + dy) * self.scale), int(ms))
+        point = (round((x + dx) * self.scale), round((y + dy) * self.scale))
+        press(*point, int(ms))
+        if self.deploy_trace is not None:
+            self.deploy_trace.input("hold", [point], self.scale)
         self.screen = None
         return True
 
@@ -901,8 +911,11 @@ class Game:
         self.check_in_front()
         dx, dy = self._offset(3, self.uses("tap_spread"))
         path = human.slide_path([(x + dx, y + dy) for x, y in points], int(ms))
-        if not drag([(round(x * self.scale), round(y * self.scale)) for x, y in path], int(ms)):
+        scaled = [(round(x * self.scale), round(y * self.scale)) for x, y in path]
+        if not drag(scaled, int(ms)):
             return False
+        if self.deploy_trace is not None:
+            self.deploy_trace.input("slide", scaled, self.scale)
         self.screen = None
         return True
 
@@ -913,7 +926,8 @@ class Game:
             return human.offset(self.rng, jitter)
         return self.rng.randint(-jitter, jitter), self.rng.randint(-jitter, jitter)
 
-    def tap_many(self, points: list[tuple[int, int]], jitter: int = 0, pause: float | list[float] = 0.0) -> None:
+    def tap_many(self, points: list[tuple[int, int]], jitter: int = 0, pause: float | list[float] = 0.0,
+                 *, troop_deploy: bool = False) -> None:
         """Tap each point in quick succession: one burst on devices that
         support it, single taps ``pause`` seconds apart otherwise (a list:
         the pause after each tap)."""
@@ -928,12 +942,17 @@ class Game:
                 x, y = x + dx, y + dy
             scaled.append((round(x * self.scale), round(y * self.scale)))
         burst = getattr(self.device, "tap_many", None)
+        trace = self.deploy_trace if troop_deploy else None
         if burst is not None:
             burst(scaled, pause)
+            if trace is not None:
+                trace.input("taps", scaled, self.scale)
             return
         gaps = pause if isinstance(pause, list) else [pause] * len(scaled)
         for point, gap in zip(scaled, gaps + [0.0] * (len(scaled) - len(gaps))):
             self.device.tap(*point)
+            if trace is not None:
+                trace.input("taps", [point], self.scale)
             if gap:
                 self.wait(gap, exact=True)
 

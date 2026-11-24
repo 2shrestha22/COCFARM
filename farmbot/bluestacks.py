@@ -551,6 +551,17 @@ def open_device_retrying(cfg: DeviceConfig, sleep: Callable[[float], None] = tim
     raise GaveUp("the emulator did not answer")  # not reached: the last try returns or raises
 
 
+def prepare_gestures(cfg: DeviceConfig, device: Device) -> None:
+    if cfg.mode != "manual" or not cfg.rooted_adb or not isinstance(device, AdbDevice):
+        return
+    try:
+        device.request_root()
+    except DeviceError as exc:
+        log.warning("Rooted ADB unavailable on %s: %s. Continuing with the available gestures.", device.serial, exc)
+    else:
+        log.info("Rooted ADB is active on %s", device.serial)
+
+
 def restart_emulator(cfg: DeviceConfig, sleep: Callable[[float], None] = time.sleep) -> Device:
     """Close the emulator and open it again (the watchdog's last resort when
     the game or ADB stops answering). Returns the new connection."""

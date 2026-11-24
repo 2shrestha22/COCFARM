@@ -14,11 +14,14 @@ from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any
 
+from farmbot import standard
 from farmbot.castle import PRESETS
 from farmbot.geometry import Rect
 
 SIDES = ("nw", "ne", "sw", "se")
 EMULATORS = ("bluestacks", "ldplayer", "mumu")  # device.mode values COCFARM finds, sets up and starts by itself
+MAX_WM_NUMBER = 2_147_483_647  # Android's wm command parses a signed Java int
+MIN_WM_DENSITY = 72
 
 
 @dataclass
@@ -41,10 +44,13 @@ class DeviceConfig:
     # Turn the emulator's sound down to nothing each time the bot connects
     # (through ADB; off: the volume is left as it is).
     mute: bool = True
-    # The display, CPU cores, memory, frame rate and phone model aren't
-    # settings: every emulator is set to farmbot.standard when it connects.
+    # The managed emulators use farmbot.standard when they connect.
     serial: str = ""
     adb_path: str = "adb"  # for USB, use Android Platform-Tools on PATH or set its full path
+    manual_width: int = standard.WIDTH
+    manual_height: int = standard.HEIGHT
+    manual_dpi: int = standard.DPI
+    rooted_adb: bool = False  # request root before using touchscreen gestures in manual mode
     package: str = "com.supercell.clashofclans"
     # How much bigger the game draws its buttons than the pictures in
     # templates/ (about 1.2 on a 16:9 BlueStacks window). 0 = work it out.
@@ -876,6 +882,10 @@ class Config:
             raise ValueError("attack.sides needs at least one side")
         if self.device.mode not in EMULATORS + ("manual",):
             raise ValueError('device.mode must be "bluestacks", "ldplayer", "mumu" or "manual"')
+        for name, least in (("manual_width", 1), ("manual_height", 1), ("manual_dpi", MIN_WM_DENSITY)):
+            value = getattr(self.device, name)
+            if type(value) is not int or not least <= value <= MAX_WM_NUMBER:
+                raise ValueError(f"device.{name} must be an integer from {least} to {MAX_WM_NUMBER}")
         bad_kinds = [k for k in self.bot.stop_when_full if k not in RESOURCES]
         if bad_kinds:
             raise ValueError(f"bot.stop_when_full: unknown {bad_kinds}; use {RESOURCES}")

@@ -23,6 +23,12 @@ launch_timeout = 120.0
 # Use Android Platform-Tools on PATH or set adb_path to the full path to adb.exe.
 serial = ""
 adb_path = "adb"
+# Advanced → Emulator → Custom device uses these values for Apply display.
+manual_width = 860
+manual_height = 672
+manual_dpi = 240
+# Request adb root when starting a farm on a manual device that supports it.
+rooted_adb = false
 package = "com.supercell.clashofclans"
 
 [regions]
