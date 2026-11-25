@@ -306,8 +306,8 @@ class DeployPoints:
         # points: only where along them, and which side first).
         self.rng, self.human_like = rng, human_like and rng is not None
         on = self.human_like
-        self.streams = {s: itertools.cycle(human.walk(rng, edges[s], on)) for s in [*sides, *spare]
-                        if edges.get(s)}
+        self.paths = {s: human.walk(rng, edges[s], on) for s in [*sides, *spare] if edges.get(s)}
+        self.streams = {s: itertools.cycle(path) for s, path in self.paths.items()}
         if not self.streams:
             raise RuntimeError("no deploy points on any side")
         first = [s for s in self.streams if s in sides] or list(self.streams)
@@ -321,6 +321,7 @@ class DeployPoints:
         self.dropped: dict[str, int] = {}  # troop taps per side
         self.spots: list[tuple[str, Point, float]] = []  # where units went out: side, point, how many
         self.all_round = False  # league bonus farming: each batch round every side, a tap each (not one side's)
+        self.even_spread = False  # normal Spread: split each card across sides and along their full lengths
 
     def __iter__(self) -> DeployPoints:
         return self
@@ -344,6 +345,31 @@ class DeployPoints:
             if self.human_like and self.rng.random() < SKIP_POINT:
                 next(stream)
             batch.append(next(stream))
+        self.dropped[side] = self.dropped.get(side, 0) + count
+        return side, batch
+
+    def take_spread(self, count: int, left: int, placed: dict[str, int]) -> tuple[str, list[Point]]:
+        """One side's share of a card, evenly spaced along its points.
+
+        ``placed`` tracks this card's landed units, in its starting side
+        order. Recompute shares when a side is refused or a count changes,
+        without losing the single-side batches used to detect refusals.
+        """
+        order = [s for s in placed if s in self.live] + [s for s in self.live if s not in placed]
+        total = left + sum(placed.get(s, 0) for s in order)
+        share, extra = divmod(total, len(order))
+        quotas = {s: share + (i < extra) for i, s in enumerate(order)}
+        for _ in self.live:
+            side = self._side()
+            if placed.get(side, 0) < quotas[side]:
+                break
+        start = placed.get(side, 0)
+        count = min(count, left, quotas[side] - start)
+        path = self.paths[side]
+        # A refused share tries fresh points before the side is dropped.
+        shift = self.misses.get(side, 0)
+        batch = [path[((2 * i + 1) * len(path) // (2 * quotas[side]) + shift) % len(path)]
+                 for i in range(start, start + count)]
         self.dropped[side] = self.dropped.get(side, 0) + count
         return side, batch
 
@@ -442,7 +468,8 @@ class DeployPoints:
             if not self.war_map:
                 points = on_open_ground(screen, points, cfg, rims=found.rims)
             if len(points) >= cfg.redline.min_side_points:
-                self.streams[s] = itertools.cycle(human.walk(self.rng, points, self.human_like))
+                self.paths[s] = human.walk(self.rng, points, self.human_like)
+                self.streams[s] = itertools.cycle(self.paths[s])
                 self.redrawn.add(s)
                 self.misses[s] = 0
                 moved[s] = points
@@ -924,7 +951,10 @@ def deploy_card(game: Game, card: Card, points: Iterator[Point], cfg: Config,
     # "Hold to deploy": a big card goes down in a mix of held fingers and bursts of taps.
     round_sides = isinstance(points, DeployPoints) and points.all_round
     holding = (card.kind == "troop" and isinstance(points, DeployPoints) and not round_sides
+               and not points.even_spread
                and game.uses("hold_deploy"))
+    spread_points = None
+    spread_placed: dict[str, int] = {}
     batches = batches_for(left, cfg)
     for _ in range(batches):
         game.tap(*card.center)
@@ -945,6 +975,13 @@ def deploy_card(game: Game, card: Card, points: Iterator[Point], cfg: Config,
         taps = min(size, left) if left else size
         if round_sides:
             side, batch = None, points.round(taps)  # every side in turn, a tap each: round the whole base
+        elif card.kind == "troop" and isinstance(points, DeployPoints) and points.even_spread and left:
+            if points is not spread_points:
+                spread_points = points
+                start = points.turn % len(points.live)
+                spread_placed = dict.fromkeys(points.live[start:] + points.live[:start], 0)
+            side, batch = points.take_spread(taps, left, spread_placed)
+            taps = len(batch)
         elif isinstance(points, DeployPoints):
             side, batch = points.take(taps)
         else:
@@ -978,6 +1015,8 @@ def deploy_card(game: Game, card: Card, points: Iterator[Point], cfg: Config,
             if side is not None:
                 points.landed(side)
                 points.went(side, batch, (left - now) if now and left else len(batch))
+                if points is spread_points:
+                    spread_placed[side] = spread_placed.get(side, 0) + ((left - now) if now and left else taps)
             # Unread, it's at most the taps fewer (some may have been refused).
             left = now or (max(left - taps, 1) if left else None)
         elif side is not None and (points.redraw(side, after, cfg, game.deploy_trace) or points.refused(side)):
@@ -1207,7 +1246,16 @@ def deploy_taps(game: Game, card: Card, points: Iterator[Point], taps: int, cfg:
     game.tap(*card.center)
     _wait(game, cfg, 0.15, SETTLE)
     # (round the sides, a point each)
-    batch = points.round(taps) if isinstance(points, DeployPoints) else [next(points) for _ in range(taps)]
+    if card.kind == "troop" and isinstance(points, DeployPoints) and points.even_spread:
+        start = points.turn % len(points.live)
+        placed = dict.fromkeys(points.live[start:] + points.live[:start], 0)
+        batch = []
+        for left in range(taps, 0, -1):
+            side, one = points.take_spread(1, left, placed)
+            batch.extend(one)
+            placed[side] = placed.get(side, 0) + 1
+    else:
+        batch = points.round(taps) if isinstance(points, DeployPoints) else [next(points) for _ in range(taps)]
     game.tap_many(batch, jitter=3, pause=_burst(game, cfg, taps, cfg.attack.tap_delay), troop_deploy=card.kind == "troop")
 
 
@@ -1832,6 +1880,8 @@ def _attack(game: Game, cfg: Config, target: Loot | None, room: dict[str, int] |
     fixed_points = cycle_points(fixed_lines(game.size[0], cfg), sides, game.rng, _rhythm(cfg), spare)
     edge_points.war_map = fixed_points.war_map = war_map
     edge_points.all_round = league
+    even_spread = acfg.placement == "spread" and not (for_stars or league or quakes_first or walking)
+    edge_points.even_spread = fixed_points.even_spread = even_spread
     def aim() -> Point:
         """The spells' one spot: following the push when there is one; a new one each battle."""
         game.spell_spot = spell_aim(edges, center, focus, acfg, game.rng, getattr(game, "spell_spot", None))
@@ -1879,6 +1929,7 @@ def _attack(game: Game, cfg: Config, target: Loot | None, room: dict[str, int] |
         fixed_points = cycle_points(fixed_lines(game.size[0], cfg), sides, game.rng, _rhythm(cfg), spare)
         edge_points.war_map = fixed_points.war_map = war_map
         edge_points.all_round = league
+        edge_points.even_spread = fixed_points.even_spread = even_spread
         over_base = spell_points(edges, center, acfg.spell_reach, game.rng)
         spot = aim()
         quake_at = path_spots(troop_edges, center, sides) if quakes_first else quake_spots(spot, edges, center,
