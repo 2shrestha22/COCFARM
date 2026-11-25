@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import date, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from ipaddress import ip_address
 from pathlib import Path
 from secrets import token_urlsafe
 from urllib.parse import parse_qs, urlsplit
@@ -305,9 +306,17 @@ class Dashboard:
 
 def request_handler(dashboard: Dashboard) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
-        @property
-        def host(self) -> str:
-            return f"127.0.0.1:{self.server.server_port}"
+        def _valid_host(self) -> bool:
+            # Accept this connection's destination, not arbitrary Host headers:
+            # remote access must not remove the DNS-rebinding protection.
+            address = self.connection.getsockname()[0]
+            names = {address, self.server.server_name}
+            if ip_address(address).is_loopback:
+                names.add("localhost")
+            hosts = self.headers.get_all("Host", [])
+            return len(hosts) == 1 and hosts[0] in {
+                f"{name}:{self.server.server_port}" for name in names
+            }
 
         def log_message(self, *_args) -> None:
             pass
@@ -331,8 +340,8 @@ def request_handler(dashboard: Dashboard) -> type[BaseHTTPRequestHandler]:
             self._send(json.dumps(value).encode(), "application/json", status)
 
         def do_GET(self) -> None:
-            if self.headers.get("Host") != self.host:
-                self._json({"error": "Use the local URL printed in the terminal"}, 403)
+            if not self._valid_host():
+                self._json({"error": "Use the dashboard server's address and port"}, 403)
                 return
             path = urlsplit(self.path)
             try:
@@ -358,8 +367,9 @@ def request_handler(dashboard: Dashboard) -> type[BaseHTTPRequestHandler]:
                 self._json({"error": str(exc)}, 400)
 
         def do_POST(self) -> None:
-            if self.headers.get("Host") != self.host or self.headers.get("Origin") != f"http://{self.host}":
-                self._json({"error": "Use the local dashboard to make changes"}, 403)
+            if (not self._valid_host()
+                    or self.headers.get_all("Origin", []) != [f"http://{self.headers.get('Host')}"]):
+                self._json({"error": "Use the dashboard's same-origin page to make changes"}, 403)
                 return
             try:
                 length = int(self.headers.get("Content-Length", "0"))
@@ -408,16 +418,22 @@ def request_handler(dashboard: Dashboard) -> type[BaseHTTPRequestHandler]:
     return Handler
 
 
-def serve(path: Path, serial: str | None, port: int) -> int:
+def serve(path: Path, serial: str | None, port: int, host: str = "127.0.0.1") -> int:
     if not 0 <= port <= 65535:
         raise ValueError("Port must be between 0 and 65535")
     dashboard = Dashboard(path, serial)
     dashboard.settings()
     root_logger = logging.getLogger()
-    with ThreadingHTTPServer(("127.0.0.1", port), request_handler(dashboard)) as server:
+    with ThreadingHTTPServer((host, port), request_handler(dashboard)) as server:
         root_logger.addHandler(dashboard.logs)
-        url = f"http://127.0.0.1:{server.server_port}"
+        url = f"http://{'127.0.0.1' if host == '0.0.0.0' else host}:{server.server_port}"
         print(f"COCFARM dashboard at {url} (Ctrl+C to close)", flush=True)
+        if host == "0.0.0.0":
+            print(f"Network access enabled: http://<this computer's LAN or Tailscale IP>:{server.server_port}",
+                  flush=True)
+        if not ip_address(server.server_address[0]).is_loopback:
+            print("Warning: this dashboard has no login. Use only on trusted networks; do not expose it publicly.",
+                  flush=True)
         try:
             server.serve_forever()
         except KeyboardInterrupt:

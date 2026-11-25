@@ -227,6 +227,15 @@ Changes during a run take effect on the next start. Run `farmbot web`
 and open the URL printed in your terminal. Press Ctrl+C to stop the dashboard
 and its farm.
 
+To open the dashboard from another device on your LAN or Tailscale network,
+run `farmbot web --host 0.0.0.0` and open
+`http://<this computer's LAN or Tailscale IP>:8765` on that device. You can
+instead bind a specific interface with `--host <IP>`, and change the port
+with `--port`. Localhost-only access remains the default. The dashboard has
+no login, so enable network access only on trusted networks and do not
+publish it to the internet. Browser controls require the same origin as
+the dashboard page; arbitrary Host headers remain rejected.
+
 After editing the dashboard source in `frontend/`, rebuild the bundled web
 assets with `npm --prefix frontend ci` and `npm --prefix frontend run build`.
 

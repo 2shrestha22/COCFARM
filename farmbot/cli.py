@@ -220,7 +220,7 @@ def cmd_web(args: argparse.Namespace) -> int:
     if args.config is None:
         ensure_config(path)
     try:
-        return serve(path, args.serial, args.port)
+        return serve(path, args.serial, args.port, host=args.host)
     except OSError as exc:
         raise ValueError(f"Could not start the dashboard: {exc}") from exc
 
@@ -292,8 +292,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="save live deployment frames, candidates and troop inputs to screens/deploy-trace")
     p.set_defaults(func=cmd_run)
 
-    p = sub.add_parser("web", help="start the local web dashboard")
-    p.add_argument("--port", type=int, default=8765, help="loopback port (0 picks a free port)")
+    p = sub.add_parser("web", help="start the web dashboard")
+    p.add_argument("--host", default="127.0.0.1",
+                   help="listen address (default: 127.0.0.1; use 0.0.0.0 for trusted-network access)")
+    p.add_argument("--port", type=int, default=8765, help="listen port (0 picks a free port)")
     p.add_argument("--no-browser", action="store_true", help=argparse.SUPPRESS)  # accepted by older launch scripts
     p.set_defaults(func=cmd_web)
 
