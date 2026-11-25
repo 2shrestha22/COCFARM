@@ -56,7 +56,9 @@ PAGES = (
                    fold("Ability timing", *fields("attack", "hero_ability_delay ability_health ability_max_wait")),
                    "attack.hero_walk", fold("Walk timing",
                                            *fields("attack", "walk_time walk_invisibility_health walk_fox walk_spear_early"))),
-             group("Spells", *fields("attack", "spells quakes_per_spot quake_aim funnel spell_placement spell_spot"))),
+             group("Spells", *fields("attack", "spells spell_placement spell_spot")),
+             group("Earthquake Spells", *fields("attack", "quake_aim quakes_per_spot funnel"),
+                   when=("attack.spells", ("earthquake", "all")))),
          tab("village", "Village",
              group("Collecting", *fields("bot", "collect_resources"),
                    fields("bot", "collect_gold collect_elixir collect_dark collect_ice"),
@@ -133,15 +135,19 @@ PAIR_LABELS = {
 }
 
 
+# A field with visibility rules is shown when any of its conditions match.
 VISIBILITY = {
-    "bot.auto_first": ("bot.mode", ("auto",)),
-    "device.bluestacks_instance": ("device.mode", ("bluestacks",)),
-    "device.ldplayer": ("device.mode", ("ldplayer",)),
-    "device.ldplayer_index": ("device.mode", ("ldplayer",)),
-    "device.mumu_index": ("device.mode", ("mumu",)),
-    "device.serial": ("device.mode", ("manual",)),
-    "device.launch_emulator": ("device.mode", ("bluestacks", "ldplayer", "mumu")),
-    "device.enable_adb": ("device.mode", ("bluestacks", "ldplayer")),
+    "attack.funnel": (("attack.quake_aim", ("path",)),),
+    # Earthquakes also use the target if the opening cast falls back to a later cast.
+    "attack.spell_spot": (("attack.spell_placement", ("together",)), ("attack.spells", ("earthquake", "all"))),
+    "bot.auto_first": (("bot.mode", ("auto",)),),
+    "device.bluestacks_instance": (("device.mode", ("bluestacks",)),),
+    "device.ldplayer": (("device.mode", ("ldplayer",)),),
+    "device.ldplayer_index": (("device.mode", ("ldplayer",)),),
+    "device.mumu_index": (("device.mode", ("mumu",)),),
+    "device.serial": (("device.mode", ("manual",)),),
+    "device.launch_emulator": (("device.mode", ("bluestacks", "ldplayer", "mumu")),),
+    "device.enable_adb": (("device.mode", ("bluestacks", "ldplayer")),),
 }
 
 
@@ -153,8 +159,6 @@ DEPENDENCIES = (
     ("attack.hero_abilities", (True,), "attack.hero_ability_delay attack.ability_health attack.ability_max_wait"),
     ("attack.hero_walk", ("queen", "champion"), "attack.walk_time attack.walk_invisibility_health attack.walk_fox"),
     ("attack.hero_walk", ("champion",), "attack.walk_spear_early"),
-    ("attack.spells", ("earthquake", "all"), "attack.quakes_per_spot attack.quake_aim attack.funnel"),
-    ("attack.spell_placement", ("together",), "attack.spell_spot"),
     ("attack.league_bonus", (True,), "attack.league_bonus_damage"),
     ("attack.end_when_no_loot", (True,), "attack.no_loot_seconds"),
     ("bot.collect_resources", (True,), "bot.collect_gold bot.collect_elixir bot.collect_dark bot.collect_ice "

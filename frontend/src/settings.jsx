@@ -447,8 +447,8 @@ export function Settings({ tab, dashboard, embedded }) {
   function row(entry) {
     if (Array.isArray(entry)) return <PairedRow key={entry[0]} paths={entry} fields={fields} dashboard={dashboard} />;
     if (typeof entry === "string") {
-      const rule = catalog.visibility[entry];
-      if (rule && !rule[1].includes(value(rule[0]))) return null;
+      const rules = catalog.visibility[entry];
+      if (rules && !rules.some(([path, allowed]) => allowed.includes(value(path)))) return null;
       const field = fields[entry];
       if (field.control === "builders" && !(dashboard.settings.builders?.[entry] > 1)) return null;
       return <SettingField key={entry} field={field} dashboard={dashboard} />;
